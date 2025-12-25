@@ -63,6 +63,7 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 | `TPM_NOT_AVAILABLE` | TPM 不可用 | 503 |
 | `CORE_KEY_NOT_FOUND` | 核心密钥未初始化 | 500 |
 | `TIME_WINDOW_INVALID` | 时间窗口无效 | 400 |
+| `TIME_WINDOW_MISMATCH` | 私钥与公钥时间窗口不一致 | 403 |
 | `CONVERSION_FAILED` | 密钥转换失败 | 400 |
 | `URL_MISMATCH` | 服务器地址不匹配 | 403 |
 | `TIME_OUT_OF_RANGE` | 不在允许的时间范围内 | 403 |
@@ -198,7 +199,7 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 {
   "success": true,
   "data": {
-    "private_key": "aB3$xY9#mK2p",
+    "private_key": "{\"key\":\"aB3$xY9#mK2p\",\"time_window\":{\"start\":\"2024-01-01T00:00:00Z\",\"end\":\"2024-12-31T23:59:59Z\"}}",
     "transfer_keys": [
       "TK-A8f9e2d1c4b5a6d7e8f9",
       "TK-B7e8d9c0b1a2f3e4d5c6"
@@ -213,6 +214,13 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
   }
 }
 ```
+
+**私钥结构说明**：
+- 私钥现在是 JSON 字符串格式，包含两个字段：
+  - `key`: 实际的密钥字符串（6-16位随机字符）
+  - `time_window`: 时间窗口信息（与公钥中的时间窗口必须一致）
+- 这种结构防止攻击者通过修改公钥中的时间窗口来绕过时间限制
+- 解密时会验证私钥中的时间窗口与公钥中的时间窗口是否一致
 
 ### 2.2 验证私钥格式
 
@@ -276,15 +284,17 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 - ✅ 必须提供生成时创建的**所有**转换密钥
 - ✅ 所有转换密钥必须**完全正确**
 - ✅ **输入顺序无关**：密钥可以任意顺序提供，系统自动排序验证
+- ✅ **时间窗口一致性**：私钥中的时间窗口必须与公钥中的时间窗口一致
 - ❌ 缺少任何一个转换密钥将导致解密失败
 - ❌ 任何一个转换密钥错误将导致解密失败
+- ❌ 时间窗口不一致将导致验证失败
 
 **响应示例**（成功）:
 ```json
 {
   "success": true,
   "data": {
-    "private_key": "aB3$xY9#mK2p",
+    "private_key": "{\"key\":\"aB3$xY9#mK2p\",\"time_window\":{\"start\":\"2024-01-01T00:00:00Z\",\"end\":\"2024-12-31T23:59:59Z\"}}",
     "time_window": {
       "start": "2024-01-01T00:00:00Z",
       "end": "2024-12-31T23:59:59Z",
@@ -358,6 +368,20 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
       "required_count": 2,
       "provided_count": 2,
       "reason": "一个或多个转换密钥不正确，所有转换密钥必须完全正确"
+    }
+  }
+}
+```
+
+**响应示例**（时间窗口不一致）:
+```json
+{
+  "success": false,
+  "error": {
+    "code": "TIME_WINDOW_MISMATCH",
+    "message": "时间窗口一致性验证失败",
+    "details": {
+      "reason": "私钥中的时间窗口与公钥中的时间窗口不一致，可能存在篡改"
     }
   }
 }
@@ -541,7 +565,16 @@ def convert_key(public_key, transfer_keys):
 # 使用示例
 result = generate_keys()
 if result["success"]:
-    print("Private Key:", result["data"]["private_key"])
+    # 私钥现在是 JSON 字符串格式
+    private_key_json = result["data"]["private_key"]
+    print("Private Key (JSON):", private_key_json)
+    
+    # 如果需要解析私钥
+    import json
+    private_key_data = json.loads(private_key_json)
+    print("Key String:", private_key_data["key"])
+    print("Time Window:", private_key_data["time_window"])
+    
     print("Transfer Keys:", result["data"]["transfer_keys"])
     print("Public Key:", result["data"]["public_key"])
 ```
@@ -602,7 +635,15 @@ async function convertKey(publicKey, transferKeys) {
 // 使用示例
 generateKeys().then(result => {
   if (result.success) {
-    console.log("Private Key:", result.data.private_key);
+    // 私钥现在是 JSON 字符串格式
+    const privateKeyJson = result.data.private_key;
+    console.log("Private Key (JSON):", privateKeyJson);
+    
+    // 如果需要解析私钥
+    const privateKeyData = JSON.parse(privateKeyJson);
+    console.log("Key String:", privateKeyData.key);
+    console.log("Time Window:", privateKeyData.time_window);
+    
     console.log("Transfer Keys:", result.data.transfer_keys);
     console.log("Public Key:", result.data.public_key);
   }

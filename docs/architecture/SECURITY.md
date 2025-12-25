@@ -128,14 +128,23 @@ def generate_core_key(tpm, server_url, salt):
 - 长度：6-16 位（可配置）
 - 必须包含：大写字母、小写字母、数字、特殊符号
 - 使用加密级随机数生成器（`secrets` 模块）
+- **包含时间窗口信息**：生效时间和截止时间
 
 ```python
 import secrets
 import string
+import json
 
-def generate_private_key(length=12):
+def generate_private_key(length=12, time_window=None):
     """
     生成符合安全要求的私钥
+    
+    Args:
+        length: 私钥随机字符串长度（6-16位）
+        time_window: 时间窗口 {"start": timestamp, "end": timestamp}
+    
+    Returns:
+        包含时间窗口的私钥结构（JSON格式字符串）
     """
     if length < 6 or length > 16:
         raise ValueError("Length must be between 6 and 16")
@@ -160,15 +169,29 @@ def generate_private_key(length=12):
     
     # 随机打乱
     secrets.SystemRandom().shuffle(password)
+    password_str = ''.join(password)
     
-    return ''.join(password)
+    # 构建包含时间窗口的私钥结构
+    private_key_structure = {
+        "key": password_str,
+        "time_window": time_window
+    }
+    
+    return json.dumps(private_key_structure)
 ```
 
 **存储安全**：
 - ❌ 服务器不存储私钥
 - ✅ 私钥仅在生成时显示一次
 - ✅ 加密后包含在公钥中
+- ✅ **私钥中包含时间窗口信息，防止时间篡改**
 - ⚠️ 用户需自行安全保管私钥
+
+**时间窗口安全强化**：
+- ✅ 私钥中嵌入生效时间和截止时间
+- ✅ 转换时进行一致性校验：公钥中的时间窗口必须与私钥中的时间窗口完全一致
+- ✅ 防止攻击者通过已知的公钥、转换密钥、算法反向计算篡改时间
+- ✅ 即使攻击者修改公钥中的时间窗口，解密后的私钥时间窗口不匹配会导致验证失败
 
 ### 3.3 转换密钥安全
 
@@ -279,7 +302,39 @@ def verify_transfer_keys(provided_keys, stored_hashes):
 - ✅ 存储所有转换密钥的哈希（`transfer_keys_hashes`）
 - ✅ 转换密钥仅存哈希，不存明文
 - ✅ 包含时间绑定信息
+- ✅ **时间窗口一致性保护**：公钥中的时间窗口与加密的私钥中的时间窗口必须一致
 - ✅ Base64 编码便于传输
+
+**时间窗口一致性校验**：
+```python
+def validate_time_window_consistency(decrypted_private_key, public_key_time_window):
+    """
+    验证私钥中的时间窗口与公钥中的时间窗口是否一致
+    
+    这是防止攻击者篡改公钥时间窗口的关键安全措施
+    """
+    import json
+    
+    # 解析私钥结构（包含时间窗口）
+    private_key_data = json.loads(decrypted_private_key)
+    private_key_time_window = private_key_data.get("time_window")
+    
+    # 验证时间窗口完全一致
+    if private_key_time_window != public_key_time_window:
+        raise SecurityError(
+            "Time window mismatch: "
+            "Private key time window does not match public key time window. "
+            "Possible tampering detected."
+        )
+    
+    return True
+```
+
+**防止时间篡改攻击**：
+- ❌ **攻击场景**：攻击者获取公钥、转换密钥和算法，尝试修改公钥中的时间窗口来延长访问期限
+- ✅ **防护措施**：私钥中也包含时间窗口，解密后必须进行一致性校验
+- ✅ **攻击失败**：即使攻击者修改公钥中的时间窗口，解密得到的私钥时间窗口不匹配，验证失败
+- ✅ **数学保证**：时间窗口既作为加密参数，又作为验证数据，双重保护
 
 ## 4. 时间验证安全
 
@@ -371,8 +426,56 @@ def verify_time_window(tpm, time_window):
 |---------|---------|------|
 | 修改系统时间 | ❌ 失败 | 使用 TPM 时钟，不受影响 |
 | 修改代码跳过时间检查 | ❌ 失败 | 时间是加密参数，修改代码也解不出 |
+| 修改公钥中的时间窗口 | ❌ 失败 | 私钥中也包含时间窗口，解密后一致性校验失败 |
 | 克隆 TPM 状态 | ❌ 失败 | TPM 状态不可导出 |
 | 回滚 TPM 时钟 | ❌ 失败 | Reset 计数器会改变 |
+
+### 4.3 时间窗口一致性验证流程
+
+```python
+def convert_key_with_time_validation(public_key, transfer_keys, tpm):
+    """
+    完整的密钥转换流程，包含时间窗口一致性验证
+    """
+    import json
+    
+    # 1. 解析公钥，获取时间窗口
+    public_key_data = parse_public_key(public_key)
+    public_time_window = public_key_data['metadata']['time_window']
+    
+    # 2. 验证 TPM 当前时间是否在允许范围内
+    verify_time_window(tpm, public_time_window)
+    
+    # 3. 验证转换密钥并解密私钥
+    decrypted_private_key = decrypt_private_key(
+        public_key_data, 
+        transfer_keys, 
+        tpm
+    )
+    
+    # 4. 解析私钥结构（包含时间窗口）
+    private_key_data = json.loads(decrypted_private_key)
+    private_time_window = private_key_data.get('time_window')
+    
+    # 5. 关键步骤：验证时间窗口一致性
+    if private_time_window != public_time_window:
+        raise SecurityError(
+            "TIME_WINDOW_MISMATCH: "
+            "Private key time window does not match public key time window. "
+            f"Public: {public_time_window}, Private: {private_time_window}. "
+            "Possible tampering detected."
+        )
+    
+    # 6. 返回私钥字符串
+    return private_key_data['key']
+```
+
+**安全保证**：
+- ✅ 即使攻击者获取公钥、转换密钥和算法
+- ✅ 即使攻击者修改公钥中的时间窗口（如延长到期日期）
+- ✅ 解密后的私钥时间窗口与修改后的公钥时间窗口不匹配
+- ✅ 一致性校验失败，攻击失败
+- ✅ 提供了数学级别的时间窗口保护
 
 ## 5. 网络通信安全
 
