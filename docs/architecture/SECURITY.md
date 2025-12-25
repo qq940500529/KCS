@@ -164,51 +164,10 @@ def generate_private_key(length=12):
     return ''.join(password)
 ```
 
-**时间窗口嵌入机制**：
-
-时间窗口信息通过核心密钥参与的加密转换嵌入到密钥派生过程中：
-
-```python
-def derive_encryption_key_with_time(core_key, transfer_keys, time_window, tpm_time_seed):
-    """
-    派生加密密钥时将时间窗口信息嵌入
-    
-    核心密钥参与时间窗口的加密转换，使得加密密钥依赖于时间窗口。
-    修改公钥中的时间窗口会导致派生出错误的加密密钥，无法正确解密私钥。
-    """
-    import hashlib
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-    from cryptography.hazmat.primitives import hashes
-    
-    # 将时间窗口序列化
-    time_data = f"{time_window['start']}|{time_window['end']}".encode()
-    
-    # 使用核心密钥对时间窗口进行加密转换
-    time_hash = hashlib.sha256(core_key + time_data).digest()
-    
-    # 组合所有转换密钥
-    sorted_keys = sorted(transfer_keys)
-    combined_keys = '|'.join(sorted_keys).encode()
-    
-    # 派生加密密钥
-    kdf = HKDF(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=time_hash,
-        info=b'kcs-private-key-encryption'
-    )
-    
-    input_material = core_key + combined_keys + time_data + tpm_time_seed.to_bytes(8, 'big')
-    encryption_key = kdf.derive(input_material)
-    
-    return encryption_key
-```
-
 **存储安全**：
 - ❌ 服务器不存储私钥
 - ✅ 私钥仅在生成时显示一次
 - ✅ 加密后包含在公钥中
-- ✅ 时间窗口通过核心密钥嵌入到派生过程
 - ⚠️ 用户需自行安全保管私钥
 
 ### 3.3 转换密钥安全
@@ -291,17 +250,15 @@ def verify_transfer_keys(provided_keys, stored_hashes):
 {
   "version": 1,
   "algorithm": "AES-256-GCM",
-  "encrypted_data": {
+  "encrypted_server_url": {
     "ciphertext": "base64_encoded",
-    "nonce": "base64_encoded",
-    "tag": "base64_encoded"
+    "nonce": "base64_encoded"
+  },
+  "encrypted_payload": {
+    "ciphertext": "base64_encoded",
+    "nonce": "base64_encoded"
   },
   "metadata": {
-    "server_url_hash": "sha256_hash",
-    "time_window": {
-      "start": "timestamp",
-      "end": "timestamp"
-    },
     "tpm_time_seed": "integer",
     "transfer_keys_count": 2,
     "transfer_keys_hashes": [
@@ -313,51 +270,193 @@ def verify_transfer_keys(provided_keys, stored_hashes):
 }
 ```
 
+加密服务器地址（encrypted_server_url）使用转换密钥派生的密钥加密，可在任何服务器上解密。
+
+加密载荷（encrypted_payload）使用核心密钥参与派生的密钥加密，只能在正确的服务器上解密，解密后包含：
+```json
+{
+  "private_key": "aB3$xY9#mK2p",
+  "time_window": {
+    "start": "timestamp",
+    "end": "timestamp"
+  }
+}
+```
+
 **安全特性**：
 - ✅ 使用 AES-256-GCM 认证加密
-- ✅ URL 仅存哈希，防止信息泄露
+- ✅ 服务器地址使用转换密钥派生的密钥加密，可在任何地方解密以提示正确地址
+- ✅ 时间窗口和私钥使用核心密钥参与派生的密钥加密，仅在正确服务器上可解密
 - ✅ 存储转换密钥数量（`transfer_keys_count`）
 - ✅ 存储所有转换密钥的哈希（`transfer_keys_hashes`）
 - ✅ 转换密钥仅存哈希，不存明文
-- ✅ 包含时间绑定信息
-- ✅ 时间窗口通过核心密钥嵌入派生过程
 - ✅ Base64 编码便于传输
 
-**时间窗口嵌入验证**：
+**密钥派生机制**：
 
 ```python
-def validate_time_embedded_key(public_key, transfer_keys, core_key, tpm):
+def derive_url_key_from_transfer_keys(transfer_keys, tpm_time_seed):
     """
-    验证时间窗口嵌入的密钥
+    从转换密钥派生服务器地址加密密钥
     
-    时间窗口通过核心密钥参与加密密钥派生。
-    修改时间窗口导致派生出错误的加密密钥，无法正确解密私钥。
+    此密钥不依赖核心密钥，可在任何服务器上使用
+    """
+    import hashlib
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    
+    sorted_keys = sorted(transfer_keys)
+    combined_keys = '|'.join(sorted_keys).encode()
+    keys_hash = hashlib.sha256(combined_keys).digest()
+    
+    kdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=keys_hash,
+        info=b'kcs-url-encryption'
+    )
+    
+    input_material = combined_keys + tpm_time_seed.to_bytes(8, 'big')
+    return kdf.derive(input_material)
+
+def derive_payload_key_from_core_and_transfer(core_key, transfer_keys, tpm_time_seed):
+    """
+    从核心密钥和转换密钥派生载荷加密密钥
+    
+    此密钥依赖核心密钥，只能在正确服务器上使用
+    """
+    import hashlib
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    
+    sorted_keys = sorted(transfer_keys)
+    combined_keys = '|'.join(sorted_keys).encode()
+    keys_hash = hashlib.sha256(combined_keys).digest()
+    
+    kdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=keys_hash,
+        info=b'kcs-payload-encryption'
+    )
+    
+    input_material = core_key + combined_keys + tpm_time_seed.to_bytes(8, 'big')
+    return kdf.derive(input_material)
+```
+
+**密钥转换验证流程**：
+
+```python
+def convert_key_with_validation(public_key, transfer_keys, current_server_url, tpm):
+    """
+    密钥转换的完整验证流程
+    
+    返回格式：
+    - 成功：{"success": True, "private_key": "..."}
+    - 转换密钥不匹配：{"success": False, "error": "TRANSFER_KEY_MISMATCH"}
+    - 服务器地址错误：{"success": False, "error": "SERVER_MISMATCH", "correct_url": "..."}
+    - 时间窗口错误：{"success": False, "error": "TIME_OUT_OF_RANGE", "valid_window": {...}}
     """
     import json
     import base64
+    import hashlib
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     
-    # 解析公钥
+    # 1. 解析公钥
     public_key_data = json.loads(base64.b64decode(public_key[4:]))
-    time_window = public_key_data['metadata']['time_window']
     
-    # 使用公钥中的时间窗口派生加密密钥
-    encryption_key = derive_encryption_key_with_time(
-        core_key,
+    # 2. 验证转换密钥哈希
+    stored_hashes = set(public_key_data['metadata']['transfer_keys_hashes'])
+    provided_hashes = set(
+        hashlib.sha256(key.encode()).hexdigest()
+        for key in transfer_keys
+    )
+    
+    if provided_hashes != stored_hashes:
+        return {
+            "success": False,
+            "error": "TRANSFER_KEY_MISMATCH",
+            "message": "转换密钥不匹配"
+        }
+    
+    # 3. 解密服务器地址（使用转换密钥派生的密钥，任何服务器都能解密）
+    url_key = derive_url_key_from_transfer_keys(
         transfer_keys,
-        time_window,
         public_key_data['metadata']['tpm_time_seed']
     )
     
-    # 尝试解密私钥
     try:
-        decrypted = decrypt_with_key(
-            encryption_key,
-            public_key_data['encrypted_data']
-        )
-        return validate_private_key_format(decrypted)
+        aesgcm = AESGCM(url_key)
+        nonce = base64.b64decode(public_key_data['encrypted_server_url']['nonce'])
+        ciphertext = base64.b64decode(public_key_data['encrypted_server_url']['ciphertext'])
+        server_url = aesgcm.decrypt(nonce, ciphertext, None).decode()
     except Exception:
-        raise SecurityError("解密失败")
+        return {
+            "success": False,
+            "error": "DECRYPTION_FAILED",
+            "message": "解密服务器地址失败"
+        }
+    
+    # 4. 验证服务器地址
+    if server_url != current_server_url:
+        return {
+            "success": False,
+            "error": "SERVER_MISMATCH",
+            "message": "当前服务器地址不匹配",
+            "correct_url": server_url
+        }
+    
+    # 5. 解密载荷（使用核心密钥派生的密钥，只能在正确服务器上解密）
+    core_key_material = get_core_key_material_from_tpm(tpm)
+    payload_key = derive_payload_key_from_core_and_transfer(
+        core_key_material,
+        transfer_keys,
+        public_key_data['metadata']['tpm_time_seed']
+    )
+    
+    try:
+        aesgcm = AESGCM(payload_key)
+        nonce = base64.b64decode(public_key_data['encrypted_payload']['nonce'])
+        ciphertext = base64.b64decode(public_key_data['encrypted_payload']['ciphertext'])
+        
+        decrypted_payload = aesgcm.decrypt(nonce, ciphertext, None).decode()
+        payload = json.loads(decrypted_payload)
+    except Exception:
+        return {
+            "success": False,
+            "error": "PAYLOAD_DECRYPTION_FAILED",
+            "message": "载荷解密失败"
+        }
+    
+    # 6. 验证时间窗口
+    current_time = get_tpm_time(tpm)
+    time_window = payload['time_window']
+    
+    if not (time_window['start'] <= current_time <= time_window['end']):
+        return {
+            "success": False,
+            "error": "TIME_OUT_OF_RANGE",
+            "message": "不在允许的时间范围内",
+            "valid_window": time_window,
+            "current_time": current_time
+        }
+    
+    # 7. 所有验证通过，返回私钥
+    return {
+        "success": True,
+        "private_key": payload['private_key']
+    }
 ```
+
+**安全性分析**：
+
+核心密钥不可逆推：
+- 服务器地址使用仅依赖转换密钥的密钥加密，可在任何服务器上解密
+- 时间窗口和私钥使用依赖核心密钥的密钥加密，只能在正确服务器上解密
+- 加密密钥通过 HKDF 从核心密钥派生
+- HKDF 是单向函数，即使知道输出也无法逆推输入
+- 核心密钥存储在 TPM 中，永不导出
+- 即使知道：公钥、转换密钥、服务器地址、时间窗口、私钥，也无法反推核心密钥
 
 ## 4. 时间验证安全
 

@@ -63,10 +63,10 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 | `TPM_NOT_AVAILABLE` | TPM 不可用 | 503 |
 | `CORE_KEY_NOT_FOUND` | 核心密钥未初始化 | 500 |
 | `TIME_WINDOW_INVALID` | 时间窗口无效 | 400 |
-| `CONVERSION_FAILED` | 密钥转换失败 | 400 |
-| `URL_MISMATCH` | 服务器地址不匹配 | 403 |
+| `TRANSFER_KEY_MISMATCH` | 转换密钥不匹配 | 403 |
+| `SERVER_MISMATCH` | 服务器地址不匹配 | 403 |
 | `TIME_OUT_OF_RANGE` | 不在允许的时间范围内 | 403 |
-| `INVALID_TRANSFER_KEY` | 转换密钥错误 | 403 |
+| `CONVERSION_FAILED` | 密钥转换失败 | 400 |
 | `INTERNAL_ERROR` | 服务器内部错误 | 500 |
 
 ---
@@ -329,49 +329,27 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 }
 ```
 
-**响应示例**（URL 不匹配）:
+**响应示例**（服务器地址不匹配）:
 ```json
 {
   "success": false,
   "error": {
-    "code": "URL_MISMATCH",
-    "message": "请在正确的服务器地址进行解密",
+    "code": "SERVER_MISMATCH",
+    "message": "当前服务器地址不匹配",
     "details": {
-      "current_url": "https://wrong-server.com",
-      "required_url": "https://kcs.example.com"
+      "correct_url": "https://kcs.example.com"
     }
   }
 }
 ```
 
-**响应示例**（转换密钥错误或不完整）:
+**响应示例**（转换密钥不匹配）:
 ```json
 {
   "success": false,
   "error": {
-    "code": "INVALID_TRANSFER_KEY",
-    "message": "转换密钥验证失败",
-    "details": {
-      "required_count": 2,
-      "provided_count": 1,
-      "reason": "提供的转换密钥数量不足，需要全部 2 个转换密钥"
-    }
-  }
-}
-```
-
-或者：
-```json
-{
-  "success": false,
-  "error": {
-    "code": "INVALID_TRANSFER_KEY",
-    "message": "转换密钥验证失败",
-    "details": {
-      "required_count": 2,
-      "provided_count": 2,
-      "reason": "一个或多个转换密钥不正确，所有转换密钥必须完全正确"
-    }
+    "code": "TRANSFER_KEY_MISMATCH",
+    "message": "转换密钥不匹配"
   }
 }
 ```

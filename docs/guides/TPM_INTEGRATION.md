@@ -401,6 +401,8 @@ class TPMKeyManager:
         import json
         import base64
         import hashlib
+        import os
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         
         # 1. 获取 TPM 时间种子
         tpm_time = self.get_tpm_time()
@@ -408,41 +410,56 @@ class TPMKeyManager:
         # 2. 从 TPM 获取核心密钥材料
         core_key_material = self._get_core_key_material()
         
-        # 3. 将时间窗口通过核心密钥加密转换
-        time_data = f"{time_window['start']}|{time_window['end']}".encode()
-        time_hash = hashlib.sha256(core_key_material + time_data).digest()
+        # 3. 派生服务器地址加密密钥（不依赖核心密钥）
+        url_key = self._derive_url_key(transfer_keys, tpm_time["clock"])
         
-        # 4. 派生加密密钥（时间窗口参与派生）
-        encryption_key = self._derive_encryption_key_with_time(
+        # 4. 加密服务器地址
+        aesgcm = AESGCM(url_key)
+        url_nonce = os.urandom(12)
+        url_ciphertext = aesgcm.encrypt(url_nonce, server_url.encode(), None)
+        
+        # 5. 派生载荷加密密钥（依赖核心密钥）
+        payload_key = self._derive_payload_key(
             core_key_material,
             transfer_keys,
-            time_window,
             tpm_time["clock"]
         )
         
-        # 5. 加密私钥（使用嵌入时间窗口的密钥）
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        # 6. 构建并加密载荷
+        payload = {
+            "private_key": private_key,
+            "time_window": time_window
+        }
+        payload_json = json.dumps(payload)
         
-        aesgcm = AESGCM(encryption_key)
-        nonce = os.urandom(12)
-        ciphertext = aesgcm.encrypt(nonce, private_key.encode(), None)
+        aesgcm = AESGCM(payload_key)
+        payload_nonce = os.urandom(12)
+        payload_ciphertext = aesgcm.encrypt(payload_nonce, payload_json.encode(), None)
         
-        # 6. 计算每个转换密钥的哈希
+        # 7. 计算每个转换密钥的哈希
         transfer_keys_hashes = [
             hashlib.sha256(key.encode()).hexdigest()
             for key in transfer_keys
         ]
         
-        # 7. 生成公钥（封装所有信息）
+        # 8. 生成公钥
         public_key_data = {
             "version": 1,
-            "encrypted_private_key": base64.b64encode(ciphertext).decode(),
-            "nonce": base64.b64encode(nonce).decode(),
-            "server_url": server_url,
-            "time_window": time_window,
-            "tpm_time_seed": tpm_time["clock"],
-            "transfer_keys_count": len(transfer_keys),
-            "transfer_keys_hashes": transfer_keys_hashes
+            "algorithm": "AES-256-GCM",
+            "encrypted_server_url": {
+                "ciphertext": base64.b64encode(url_ciphertext).decode(),
+                "nonce": base64.b64encode(url_nonce).decode()
+            },
+            "encrypted_payload": {
+                "ciphertext": base64.b64encode(payload_ciphertext).decode(),
+                "nonce": base64.b64encode(payload_nonce).decode()
+            },
+            "metadata": {
+                "tpm_time_seed": tpm_time["clock"],
+                "transfer_keys_count": len(transfer_keys),
+                "transfer_keys_hashes": transfer_keys_hashes,
+                "created_at": tpm_time["clock"]
+            }
         }
         
         public_key = "PUB_" + base64.b64encode(
@@ -451,24 +468,25 @@ class TPMKeyManager:
         
         return public_key
     
-    def convert_key(self, public_key, transfer_keys):
+    def convert_key(self, public_key, transfer_keys, current_server_url):
         """
         转换公钥为私钥（支持任意数量转换密钥验证，输入顺序无关）
         
         Args:
             public_key: 公钥字符串
             transfer_keys: 用户提供的转换密钥列表（顺序可任意）
+            current_server_url: 当前服务器地址
         
         Returns:
-            解密的私钥字符串
+            字典格式的结果，包含成功状态和相关信息
         
         Raises:
             ValueError: 转换密钥验证失败
-            SecurityError: 解密失败
         """
         import json
         import base64
         import hashlib
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         
         # 1. 解析公钥
         public_key_data = json.loads(
@@ -476,7 +494,7 @@ class TPMKeyManager:
         )
         
         # 2. 验证转换密钥数量
-        required_count = public_key_data["transfer_keys_count"]
+        required_count = public_key_data["metadata"]["transfer_keys_count"]
         provided_count = len(transfer_keys)
         
         if provided_count != required_count:
@@ -485,85 +503,132 @@ class TPMKeyManager:
             )
         
         # 3. 验证每个转换密钥的哈希（顺序无关，使用集合比较）
-        stored_hashes = set(public_key_data["transfer_keys_hashes"])
+        stored_hashes = set(public_key_data["metadata"]["transfer_keys_hashes"])
         provided_hashes = set(
             hashlib.sha256(key.encode()).hexdigest()
             for key in transfer_keys
         )
         
         if provided_hashes != stored_hashes:
-            raise ValueError(
-                "一个或多个转换密钥不正确，所有转换密钥必须完全正确"
-            )
+            return {
+                "success": False,
+                "error": "TRANSFER_KEY_MISMATCH",
+                "message": "转换密钥不匹配"
+            }
         
-        # 4. 验证时间
-        current_time = self.get_tpm_time()
-        # ... 时间验证逻辑
-        
-        # 5. 从TPM获取核心密钥并派生加密密钥
-        core_key_material = self._get_core_key_material()
-        time_window = public_key_data["time_window"]
-        
-        encryption_key = self._derive_encryption_key_with_time(
-            core_key_material,
+        # 4. 解密服务器地址（使用转换密钥派生的密钥）
+        url_key = self._derive_url_key(
             transfer_keys,
-            time_window,
-            public_key_data["tpm_time_seed"]
+            public_key_data["metadata"]["tpm_time_seed"]
         )
         
-        # 6. 解密私钥
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        
         try:
-            aesgcm = AESGCM(encryption_key)
-            nonce = base64.b64decode(public_key_data["nonce"])
-            ciphertext = base64.b64decode(public_key_data["encrypted_private_key"])
+            aesgcm = AESGCM(url_key)
+            nonce = base64.b64decode(public_key_data["encrypted_server_url"]["nonce"])
+            ciphertext = base64.b64decode(public_key_data["encrypted_server_url"]["ciphertext"])
+            server_url = aesgcm.decrypt(nonce, ciphertext, None).decode()
+        except Exception:
+            return {
+                "success": False,
+                "error": "URL_DECRYPTION_FAILED",
+                "message": "解密服务器地址失败"
+            }
+        
+        # 5. 验证服务器地址
+        if server_url != current_server_url:
+            return {
+                "success": False,
+                "error": "SERVER_MISMATCH",
+                "message": "当前服务器地址不匹配",
+                "correct_url": server_url
+            }
+        
+        # 6. 从TPM获取核心密钥并派生载荷加密密钥
+        core_key_material = self._get_core_key_material()
+        payload_key = self._derive_payload_key(
+            core_key_material,
+            transfer_keys,
+            public_key_data["metadata"]["tpm_time_seed"]
+        )
+        
+        # 7. 解密载荷
+        try:
+            aesgcm = AESGCM(payload_key)
+            nonce = base64.b64decode(public_key_data["encrypted_payload"]["nonce"])
+            ciphertext = base64.b64decode(public_key_data["encrypted_payload"]["ciphertext"])
             
-            private_key = aesgcm.decrypt(nonce, ciphertext, None).decode()
-            
-            # 验证私钥格式
-            if not (6 <= len(private_key) <= 16):
-                raise SecurityError("解密失败")
-            
-            return private_key
-        except Exception as e:
-            raise SecurityError("解密失败")
+            payload_json = aesgcm.decrypt(nonce, ciphertext, None).decode()
+            payload = json.loads(payload_json)
+        except Exception:
+            return {
+                "success": False,
+                "error": "PAYLOAD_DECRYPTION_FAILED",
+                "message": "载荷解密失败"
+            }
+        
+        # 8. 验证时间窗口
+        current_time = self.get_tpm_time()
+        time_window = payload["time_window"]
+        
+        if not (time_window['start'] <= current_time['clock'] <= time_window['end']):
+            return {
+                "success": False,
+                "error": "TIME_OUT_OF_RANGE",
+                "message": "不在允许的时间范围内",
+                "valid_window": time_window,
+                "current_time": current_time['clock']
+            }
+        
+        # 9. 所有验证通过，返回私钥
+        return {
+            "success": True,
+            "private_key": payload["private_key"]
+        }
     
-    def _derive_encryption_key_with_time(self, core_key_material, transfer_keys, 
-                                         time_window, tpm_time_seed):
+    def _derive_url_key(self, transfer_keys, tpm_time_seed):
         """
-        派生加密密钥，时间窗口通过核心密钥嵌入
+        派生服务器地址加密密钥（不依赖核心密钥）
         支持任意数量的转换密钥，输入顺序无关
         """
         from cryptography.hazmat.primitives.kdf.hkdf import HKDF
         from cryptography.hazmat.primitives import hashes
         import hashlib
         
-        # 将时间窗口序列化
-        time_data = f"{time_window['start']}|{time_window['end']}".encode()
-        
-        # 使用核心密钥对时间窗口进行加密转换
-        time_hash = hashlib.sha256(core_key_material + time_data).digest()
-        
-        # 对转换密钥排序（确保顺序无关）
         sorted_keys = sorted(transfer_keys)
         combined_keys = '|'.join(sorted_keys).encode()
+        keys_hash = hashlib.sha256(combined_keys).digest()
         
-        # 派生加密密钥
         kdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=time_hash,
-            info=b'kcs-private-key-encryption'
+            salt=keys_hash,
+            info=b'kcs-url-encryption'
         )
         
-        input_material = (
-            core_key_material + 
-            combined_keys + 
-            time_data + 
-            tpm_time_seed.to_bytes(8, 'big')
+        input_material = combined_keys + tpm_time_seed.to_bytes(8, 'big')
+        return kdf.derive(input_material)
+    
+    def _derive_payload_key(self, core_key_material, transfer_keys, tpm_time_seed):
+        """
+        派生载荷加密密钥（依赖核心密钥）
+        支持任意数量的转换密钥，输入顺序无关
+        """
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        from cryptography.hazmat.primitives import hashes
+        import hashlib
+        
+        sorted_keys = sorted(transfer_keys)
+        combined_keys = '|'.join(sorted_keys).encode()
+        keys_hash = hashlib.sha256(combined_keys).digest()
+        
+        kdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=keys_hash,
+            info=b'kcs-payload-encryption'
         )
         
+        input_material = core_key_material + combined_keys + tpm_time_seed.to_bytes(8, 'big')
         return kdf.derive(input_material)
     
     def _get_core_key_material(self):
