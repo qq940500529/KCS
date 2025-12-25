@@ -40,8 +40,6 @@ test('renders key generation button', () => {
 ```python
 # tests/integration/test_key_flow.py
 def test_complete_key_generation_flow():
-    import json
-    
     # 生成密钥
     result = api_client.post('/api/v1/keys/generate', json={...})
     
@@ -51,14 +49,7 @@ def test_complete_key_generation_flow():
         'transfer_keys': result['transfer_keys']
     })
     
-    # 私钥现在是 JSON 格式，需要解析
-    original_key_data = json.loads(result['private_key'])
-    converted_key_data = json.loads(convert_result['private_key'])
-    
-    # 验证密钥字符串一致
-    assert converted_key_data['key'] == original_key_data['key']
-    # 验证时间窗口一致
-    assert converted_key_data['time_window'] == original_key_data['time_window']
+    assert convert_result['private_key'] == result['private_key']
 ```
 
 ### 端到端测试 (`e2e/`)
@@ -199,7 +190,7 @@ export const mockApi = {
   generateKeys: jest.fn().mockResolvedValue({
     success: true,
     data: {
-      private_key: '{"key":"test_key_123","time_window":{"start":"2024-01-01T00:00:00Z","end":"2024-12-31T23:59:59Z"}}',
+      private_key: 'test_key_123',
       transfer_keys: ['TK-test'],
       public_key: 'PUB_test'
     }

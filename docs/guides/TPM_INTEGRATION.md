@@ -390,47 +390,44 @@ class TPMKeyManager:
         生成完整的密钥集（支持任意数量的转换密钥）
         
         Args:
-            private_key: 私钥字符串（将被包装为包含时间窗口的 JSON 结构）
+            private_key: 私钥字符串
             transfer_keys: 转换密钥列表（至少 1 个，无上限）
-            time_window: 时间窗口字典 {"start": ..., "end": ...}
+            time_window: 时间窗口字典
             server_url: 服务器 URL
         
         Returns:
             公钥字符串
         """
         import json
+        import base64
+        import hashlib
         
-        # 1. 构建包含时间窗口的私钥结构
-        private_key_structure = {
-            "key": private_key,
-            "time_window": time_window
-        }
-        private_key_json = json.dumps(private_key_structure)
-        
-        # 2. 获取 TPM 时间种子
+        # 1. 获取 TPM 时间种子
         tpm_time = self.get_tpm_time()
         
-        # 3. 从 TPM 获取核心密钥材料
+        # 2. 从 TPM 获取核心密钥材料
         core_key_material = self._get_core_key_material()
         
-        # 4. 使用所有转换密钥派生主密钥（自动排序，顺序无关）
-        master_key = self._derive_master_key_multi(
+        # 3. 将时间窗口通过核心密钥加密转换
+        time_data = f"{time_window['start']}|{time_window['end']}".encode()
+        time_hash = hashlib.sha256(core_key_material + time_data).digest()
+        
+        # 4. 派生加密密钥（时间窗口参与派生）
+        encryption_key = self._derive_encryption_key_with_time(
             core_key_material,
             transfer_keys,
+            time_window,
             tpm_time["clock"]
         )
         
-        # 5. 加密私钥（包含时间窗口的完整结构）
-        from cryptography.fernet import Fernet
-        import base64
+        # 5. 加密私钥（使用嵌入时间窗口的密钥）
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         
-        # 使用派生的主密钥创建 Fernet 实例
-        fernet_key = base64.urlsafe_b64encode(master_key)
-        f = Fernet(fernet_key)
-        encrypted_private_key = f.encrypt(private_key_json.encode())
+        aesgcm = AESGCM(encryption_key)
+        nonce = os.urandom(12)
+        ciphertext = aesgcm.encrypt(nonce, private_key.encode(), None)
         
         # 6. 计算每个转换密钥的哈希
-        import hashlib
         transfer_keys_hashes = [
             hashlib.sha256(key.encode()).hexdigest()
             for key in transfer_keys
@@ -439,9 +436,8 @@ class TPMKeyManager:
         # 7. 生成公钥（封装所有信息）
         public_key_data = {
             "version": 1,
-            "encrypted_private_key": base64.b64encode(
-                encrypted_private_key
-            ).decode(),
+            "encrypted_private_key": base64.b64encode(ciphertext).decode(),
+            "nonce": base64.b64encode(nonce).decode(),
             "server_url": server_url,
             "time_window": time_window,
             "tpm_time_seed": tpm_time["clock"],
@@ -464,11 +460,11 @@ class TPMKeyManager:
             transfer_keys: 用户提供的转换密钥列表（顺序可任意）
         
         Returns:
-            解密的私钥 JSON 字符串（包含密钥和时间窗口）
+            解密的私钥字符串
         
         Raises:
             ValueError: 转换密钥验证失败
-            SecurityError: 时间窗口不一致（可能存在篡改）
+            SecurityError: 解密失败
         """
         import json
         import base64
@@ -504,64 +500,71 @@ class TPMKeyManager:
         current_time = self.get_tpm_time()
         # ... 时间验证逻辑
         
-        # 5. 重新派生主密钥（使用所有转换密钥，自动排序）
+        # 5. 从TPM获取核心密钥并派生加密密钥
         core_key_material = self._get_core_key_material()
-        master_key = self._derive_master_key_multi(
+        time_window = public_key_data["time_window"]
+        
+        encryption_key = self._derive_encryption_key_with_time(
             core_key_material,
             transfer_keys,
+            time_window,
             public_key_data["tpm_time_seed"]
         )
         
         # 6. 解密私钥
-        from cryptography.fernet import Fernet
-        fernet_key = base64.urlsafe_b64encode(master_key)
-        f = Fernet(fernet_key)
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         
-        encrypted_private_key = base64.b64decode(
-            public_key_data["encrypted_private_key"]
-        )
-        private_key_json = f.decrypt(encrypted_private_key).decode()
-        
-        # 7. 验证时间窗口一致性（关键安全步骤）
-        private_key_data = json.loads(private_key_json)
-        private_time_window = private_key_data.get("time_window")
-        public_time_window = public_key_data["time_window"]
-        
-        if private_time_window != public_time_window:
-            raise SecurityError(
-                "TIME_WINDOW_MISMATCH: "
-                "私钥中的时间窗口与公钥中的时间窗口不一致。"
-                f"公钥时间窗口: {public_time_window}, "
-                f"私钥时间窗口: {private_time_window}. "
-                "可能存在篡改！"
-            )
-        
-        return private_key_json
+        try:
+            aesgcm = AESGCM(encryption_key)
+            nonce = base64.b64decode(public_key_data["nonce"])
+            ciphertext = base64.b64decode(public_key_data["encrypted_private_key"])
+            
+            private_key = aesgcm.decrypt(nonce, ciphertext, None).decode()
+            
+            # 验证私钥格式
+            if not (6 <= len(private_key) <= 16):
+                raise SecurityError("解密失败")
+            
+            return private_key
+        except Exception as e:
+            raise SecurityError("解密失败")
     
-    def _derive_master_key_multi(self, core_key_material, transfer_keys, tpm_time_seed):
+    def _derive_encryption_key_with_time(self, core_key_material, transfer_keys, 
+                                         time_window, tpm_time_seed):
         """
-        使用多个转换密钥派生主密钥
+        派生加密密钥，时间窗口通过核心密钥嵌入
         支持任意数量的转换密钥，输入顺序无关
         """
         from cryptography.hazmat.primitives.kdf.hkdf import HKDF
         from cryptography.hazmat.primitives import hashes
         import hashlib
         
+        # 将时间窗口序列化
+        time_data = f"{time_window['start']}|{time_window['end']}".encode()
+        
+        # 使用核心密钥对时间窗口进行加密转换
+        time_hash = hashlib.sha256(core_key_material + time_data).digest()
+        
         # 对转换密钥排序（确保顺序无关）
         sorted_keys = sorted(transfer_keys)
         combined_keys = '|'.join(sorted_keys).encode()
-        keys_hash = hashlib.sha256(combined_keys).digest()
         
-        info = f"KCS-v1-{tpm_time_seed}-{len(transfer_keys)}".encode()
-        
-        hkdf = HKDF(
+        # 派生加密密钥
+        kdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=keys_hash,
-            info=info
+            salt=time_hash,
+            info=b'kcs-private-key-encryption'
         )
         
-        return hkdf.derive(core_key_material)
+        input_material = (
+            core_key_material + 
+            combined_keys + 
+            time_data + 
+            tpm_time_seed.to_bytes(8, 'big')
+        )
+        
+        return kdf.derive(input_material)
     
     def _get_core_key_material(self):
         """
