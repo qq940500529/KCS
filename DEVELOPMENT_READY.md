@@ -173,7 +173,8 @@ KCS/
 #### 3.2 后端配置
 
 **`backend/requirements.txt`**
-- Flask/FastAPI web 框架
+- FastAPI web 框架
+- uvicorn (ASGI 服务器)
 - tpm2-pytss (TPM 库)
 - cryptography (加密库)
 - pydantic (数据验证)

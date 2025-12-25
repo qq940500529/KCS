@@ -572,10 +572,17 @@ npm install
 确保后端配置了正确的 CORS 设置：
 
 ```python
-from flask_cors import CORS
+from fastapi.middleware.cors import CORSMiddleware
 
-app = Flask(__name__)
-CORS(app, origins=["http://localhost:3000"])
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 ```
 
 ## 8. 下一步

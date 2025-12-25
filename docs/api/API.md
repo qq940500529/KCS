@@ -6,7 +6,12 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 
 **技术栈**：FastAPI + Uvicorn + Pydantic
 
-**Base URL**: `https://your-server.com/api/v1`
+**Base URL**: `/api/v1`
+
+**完整端点示例**:
+- 生成密钥：`POST /api/v1/keys/generate`
+- 转换密钥：`POST /api/v1/keys/convert`
+- 健康检查：`GET /health` (不带 `/api/v1` 前缀)
 
 **认证**: 当前版本为开源工具，暂不需要认证。生产环境建议添加 API Key 或 JWT 认证。
 
@@ -140,7 +145,7 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 
 ### 2.1 生成密钥组
 
-**POST** `/keys/generate`
+**POST** `/api/v1/keys/generate`
 
 生成私钥、转换密钥和公钥。
 
@@ -211,7 +216,7 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 
 ### 2.2 验证私钥格式
 
-**POST** `/keys/validate-format`
+**POST** `/api/v1/keys/validate-format`
 
 验证私钥是否符合指定规则（用于前端实时验证）。
 
@@ -252,7 +257,7 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 
 ### 3.1 转换公钥为私钥
 
-**POST** `/keys/convert`
+**POST** `/api/v1/keys/convert`
 
 使用公钥和**所有**转换密钥还原私钥。
 
@@ -360,7 +365,7 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 
 ### 3.2 解析公钥信息
 
-**POST** `/keys/parse-public-key`
+**POST** `/api/v1/keys/parse-public-key`
 
 解析公钥中的非敏感信息（不需要转换密钥）。
 

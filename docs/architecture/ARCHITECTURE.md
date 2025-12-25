@@ -252,8 +252,8 @@ TPM 参与解密 → 还原私钥 → 返回结果
   "success": true,
   "data": {
     "private_key": "aB3$xY9#mK2p",
-    "transfer_keys": ["trans-key-1"],
-    "public_key": "pub_...encoded...",
+    "transfer_keys": ["TK-A8f9e2d1c4b5a6d7e8f9"],
+    "public_key": "PUB_eyJ2ZXJzaW9uIjoxLCJkYXRhIjoiLi4uIn0=",
     "server_url": "https://kcs.example.com"
   }
 }
@@ -266,8 +266,8 @@ TPM 参与解密 → 还原私钥 → 返回结果
 请求体：
 ```json
 {
-  "public_key": "pub_...encoded...",
-  "transfer_keys": ["trans-key-1"]
+  "public_key": "PUB_eyJ2ZXJzaW9uIjoxLCJkYXRhIjoiLi4uIn0=",
+  "transfer_keys": ["TK-A8f9e2d1c4b5a6d7e8f9"]
 }
 ```
 
