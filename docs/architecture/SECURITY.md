@@ -1,0 +1,598 @@
+# KCS 安全性设计文档
+
+## 1. 安全设计原则
+
+KCS 系统基于以下安全设计原则：
+
+### 1.1 纵深防御 (Defense in Depth)
+
+系统采用多层安全机制，即使某一层被突破，其他层仍能提供保护：
+
+1. **硬件层**：TPM 芯片提供硬件级别的安全保障
+2. **加密层**：使用强加密算法保护密钥
+3. **验证层**：多重授权验证机制
+4. **传输层**：HTTPS 加密通信
+5. **应用层**：输入验证、速率限制、日志审计
+
+### 1.2 最小权限原则 (Principle of Least Privilege)
+
+- 每个组件仅拥有完成其功能所需的最小权限
+- TPM 核心密钥仅用于必要的加密操作
+- 服务进程以非特权用户运行
+
+### 1.3 零信任架构 (Zero Trust)
+
+- 不信任任何输入，所有数据都需要验证
+- 每次操作都需要重新验证授权
+- 不依赖网络边界防护
+
+## 2. 威胁模型
+
+### 2.1 识别的威胁
+
+| 威胁类型 | 描述 | 风险等级 | 缓解措施 |
+|---------|------|----------|----------|
+| 暴力破解 | 攻击者尝试枚举转换密钥 | 高 | 速率限制、复杂密钥、审计日志 |
+| 中间人攻击 | 拦截客户端与服务器通信 | 高 | 强制 HTTPS、证书验证 |
+| 离线攻击 | 获取公钥后离线破解 | 高 | 转换密钥不存储、TPM 绑定 |
+| 硬件克隆 | 克隆服务器硬件 | 高 | TPM 硬件绑定、不可导出密钥 |
+| 时间篡改 | 修改系统时间绕过限制 | 中 | 使用 TPM 时钟、数学绑定 |
+| 内部威胁 | 服务器管理员滥用权限 | 中 | 审计日志、最小权限 |
+| DDoS 攻击 | 大量请求导致服务不可用 | 中 | 速率限制、负载均衡 |
+| SQL 注入 | 恶意 SQL 代码注入 | 低 | 参数化查询（如使用数据库） |
+| XSS 攻击 | 跨站脚本攻击 | 低 | 输入验证、CSP 头 |
+
+### 2.2 信任边界
+
+```
+┌─────────────────────────────────────────────────────────┐
+│               不信任区域 (Internet)                       │
+│                    ▲                                     │
+│                    │ HTTPS                               │
+└────────────────────┼─────────────────────────────────────┘
+                     │
+┌────────────────────▼─────────────────────────────────────┐
+│              信任边界 (Server)                            │
+│  ┌────────────────┐         ┌────────────────┐          │
+│  │  Web 应用层    │◄───────►│  业务逻辑层    │          │
+│  └────────────────┘         └────────────────┘          │
+│                                    ▲                      │
+│                                    │                      │
+│  ┌─────────────────────────────────▼──────────────────┐  │
+│  │            可信硬件边界 (TPM)                       │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐         │  │
+│  │  │ 核心密钥 │  │ TPM 时钟 │  │ 加密引擎 │         │  │
+│  │  └──────────┘  └──────────┘  └──────────┘         │  │
+│  └─────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+## 3. 密钥安全
+
+### 3.1 核心密钥保护
+
+**生成机制**：
+```python
+def generate_core_key(tpm, server_url, salt):
+    """
+    核心密钥生成算法
+    
+    输入：
+    - TPM Endorsement Key (硬件特征)
+    - 服务器 URL
+    - 随机盐值
+    
+    输出：
+    - 存储在 TPM 中的不可导出密钥句柄
+    """
+    # 读取 EK 公钥（硬件指纹）
+    ek_pub = tpm.get_endorsement_key_public()
+    
+    # 组合输入
+    input_data = hash(ek_pub + server_url + salt)
+    
+    # 在 TPM 内部生成密钥
+    core_key_handle = tpm.create_primary(
+        hierarchy=TPM_RH_OWNER,
+        template={
+            "type": TPM_ALG_SYMCIPHER,
+            "algorithm": TPM_ALG_AES,
+            "keyBits": 256,
+            "mode": TPM_ALG_CFB,
+            "objectAttributes": 
+                FIXEDTPM |        # 不可迁移
+                FIXEDPARENT |     # 不可重新包装
+                SENSITIVEDATAORIGIN |  # TPM 生成
+                USERWITHAUTH,     # 需要授权
+        },
+        sensitive_data=input_data
+    )
+    
+    # 持久化
+    tpm.evict_control(core_key_handle, 0x81010001)
+    
+    return 0x81010001
+```
+
+**安全特性**：
+- ✅ 绑定到特定硬件（EK）
+- ✅ 绑定到特定 URL
+- ✅ 设置 `FIXEDTPM` 属性，不可导出
+- ✅ 设置 `FIXEDPARENT` 属性，不可重新包装
+- ✅ 使用 TPM 内部随机数生成器
+- ✅ 持久化到 NV 存储
+
+### 3.2 私钥安全
+
+**生成要求**：
+- 长度：6-16 位（可配置）
+- 必须包含：大写字母、小写字母、数字、特殊符号
+- 使用加密级随机数生成器（`secrets` 模块）
+
+```python
+import secrets
+import string
+
+def generate_private_key(length=12):
+    """
+    生成符合安全要求的私钥
+    """
+    if length < 6 or length > 16:
+        raise ValueError("Length must be between 6 and 16")
+    
+    # 字符集
+    uppercase = string.ascii_uppercase
+    lowercase = string.ascii_lowercase
+    digits = string.digits
+    symbols = "!@#$%^&*()-_=+[]{}|;:,.<>?"
+    
+    # 确保至少包含每种字符各一个
+    password = [
+        secrets.choice(uppercase),
+        secrets.choice(lowercase),
+        secrets.choice(digits),
+        secrets.choice(symbols),
+    ]
+    
+    # 填充剩余长度
+    all_chars = uppercase + lowercase + digits + symbols
+    password += [secrets.choice(all_chars) for _ in range(length - 4)]
+    
+    # 随机打乱
+    secrets.SystemRandom().shuffle(password)
+    
+    return ''.join(password)
+```
+
+**存储安全**：
+- ❌ 服务器不存储私钥
+- ✅ 私钥仅在生成时显示一次
+- ✅ 加密后包含在公钥中
+- ⚠️ 用户需自行安全保管私钥
+
+### 3.3 转换密钥安全
+
+**生成机制**：
+```python
+def generate_transfer_key():
+    """
+    生成转换密钥
+    格式：TK-{32字节十六进制}
+    """
+    random_bytes = secrets.token_bytes(32)
+    hex_string = random_bytes.hex()
+    return f"TK-{hex_string}"
+```
+
+**安全特性**：
+- ✅ 256 位随机数据
+- ✅ 加密级随机数生成器
+- ❌ 不在服务器存储
+- ❌ 不在公钥中明文存储（仅存哈希）
+- ⚠️ 用户需安全传输给接收者
+
+### 3.4 公钥结构
+
+```json
+{
+  "version": 1,
+  "algorithm": "AES-256-GCM",
+  "encrypted_data": {
+    "ciphertext": "base64_encoded",
+    "nonce": "base64_encoded",
+    "tag": "base64_encoded"
+  },
+  "metadata": {
+    "server_url_hash": "sha256_hash",
+    "time_window": {
+      "start": "timestamp",
+      "end": "timestamp"
+    },
+    "tpm_time_seed": "integer",
+    "transfer_key_hash": "sha256_hash",
+    "created_at": "timestamp"
+  }
+}
+```
+
+**安全特性**：
+- ✅ 使用 AES-256-GCM 认证加密
+- ✅ URL 仅存哈希，防止信息泄露
+- ✅ 转换密钥仅存哈希
+- ✅ 包含时间绑定信息
+- ✅ Base64 编码便于传输
+
+## 4. 时间验证安全
+
+### 4.1 TPM 时钟机制
+
+**为什么不使用系统时间？**
+
+| 系统时间 | TPM 时钟 |
+|---------|---------|
+| ❌ 可被管理员修改 | ✅ 硬件维护，防篡改 |
+| ❌ 可被恶意软件修改 | ✅ 独立于操作系统 |
+| ❌ 依赖 NTP 同步 | ✅ 单调递增计数器 |
+| ❌ 可回滚 | ✅ Reset 计数器可检测 |
+
+**TPM 时间读取**：
+
+```python
+def get_tpm_time_secure(tpm):
+    """
+    安全地读取 TPM 时间
+    """
+    time_info = tpm.read_clock()
+    
+    # 返回多个参数用于验证
+    return {
+        "clock": time_info.clock,           # 当前时钟值（毫秒）
+        "reset_count": time_info.resetCount,    # TPM 重置次数
+        "restart_count": time_info.restartCount, # 系统重启次数
+        "safe": time_info.safe              # 时钟是否可信
+    }
+```
+
+### 4.2 时间数学绑定
+
+**关键思想**：时间不仅是验证条件，还是加密参数
+
+```python
+def derive_encryption_key(core_key, transfer_key, tpm_time_seed, time_window):
+    """
+    派生加密密钥，时间作为派生参数
+    
+    如果时间不正确，派生出的密钥也不正确，解密会失败
+    """
+    # 时间种子生成
+    # 使用时间窗口的中点作为标准化时间点
+    time_seed = (time_window['start'] + time_window['end']) // 2
+    
+    # KDF 派生
+    kdf_input = (
+        core_key_material +
+        transfer_key.encode() +
+        time_seed.to_bytes(8, 'big') +
+        tpm_time_seed.to_bytes(8, 'big')
+    )
+    
+    encryption_key = HKDF(
+        algorithm=SHA256(),
+        length=32,
+        salt=b'kcs-v1',
+        info=b'encryption-key',
+    ).derive(kdf_input)
+    
+    return encryption_key
+
+def verify_time_window(tpm, time_window):
+    """
+    验证当前时间是否在允许窗口内
+    """
+    current_time = get_tpm_time_secure(tpm)
+    
+    # 检查 TPM 是否被重置过
+    if current_time['reset_count'] != stored_reset_count:
+        raise SecurityError("TPM has been reset")
+    
+    # 检查时间范围
+    current_clock = current_time['clock']
+    if not (time_window['start'] <= current_clock <= time_window['end']):
+        raise TimeWindowError(
+            f"Current time {current_clock} not in window "
+            f"[{time_window['start']}, {time_window['end']}]"
+        )
+    
+    return True
+```
+
+**攻击场景分析**：
+
+| 攻击方法 | 是否成功 | 原因 |
+|---------|---------|------|
+| 修改系统时间 | ❌ 失败 | 使用 TPM 时钟，不受影响 |
+| 修改代码跳过时间检查 | ❌ 失败 | 时间是加密参数，修改代码也解不出 |
+| 克隆 TPM 状态 | ❌ 失败 | TPM 状态不可导出 |
+| 回滚 TPM 时钟 | ❌ 失败 | Reset 计数器会改变 |
+
+## 5. 网络通信安全
+
+### 5.1 HTTPS 强制
+
+**Nginx 配置**：
+
+```nginx
+# 强制重定向 HTTP 到 HTTPS
+server {
+    listen 80;
+    server_name kcs.example.com;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name kcs.example.com;
+    
+    # 现代 SSL 配置
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256...';
+    ssl_prefer_server_ciphers off;
+    
+    # HSTS（强制 HTTPS）
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    
+    # 其他安全头
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" always;
+}
+```
+
+### 5.2 证书管理
+
+- 使用 Let's Encrypt 或商业证书
+- 定期自动续期
+- 监控证书过期时间
+- 使用证书透明度日志
+
+### 5.3 API 安全
+
+**速率限制**：
+
+```python
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+limiter = Limiter(
+    app,
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"]
+)
+
+@app.route("/api/v1/keys/generate", methods=["POST"])
+@limiter.limit("10 per hour")  # 密钥生成限制更严格
+def generate_keys():
+    pass
+
+@app.route("/api/v1/keys/convert", methods=["POST"])
+@limiter.limit("100 per hour")  # 转换稍宽松
+def convert_keys():
+    pass
+```
+
+**输入验证**：
+
+```python
+from pydantic import BaseModel, Field, validator
+
+class KeyGenerationRequest(BaseModel):
+    private_key_length: int = Field(..., ge=6, le=16)
+    transfer_keys_count: int = Field(..., ge=1, le=5)
+    time_window: dict
+    
+    @validator('time_window')
+    def validate_time_window(cls, v):
+        if 'start' not in v or 'end' not in v:
+            raise ValueError("Missing start or end time")
+        
+        start = parse_timestamp(v['start'])
+        end = parse_timestamp(v['end'])
+        
+        if start >= end:
+            raise ValueError("Start time must be before end time")
+        
+        if end - start > 365 * 24 * 3600:  # 最长1年
+            raise ValueError("Time window too large")
+        
+        return v
+```
+
+## 6. 审计与日志
+
+### 6.1 审计日志
+
+**记录的操作**：
+
+```python
+import logging
+import json
+from datetime import datetime
+
+audit_logger = logging.getLogger('audit')
+
+def log_key_generation(user_ip, request_data, result):
+    """
+    记录密钥生成操作
+    """
+    audit_logger.info(json.dumps({
+        "timestamp": datetime.utcnow().isoformat(),
+        "action": "KEY_GENERATION",
+        "user_ip": user_ip,
+        "private_key_length": request_data['private_key_length'],
+        "transfer_keys_count": request_data['transfer_keys_count'],
+        "time_window": request_data['time_window'],
+        "success": result['success'],
+        "public_key_hash": hash(result.get('public_key', '')),
+    }))
+
+def log_key_conversion(user_ip, public_key_hash, success, reason=None):
+    """
+    记录密钥转换操作
+    """
+    audit_logger.warning(json.dumps({
+        "timestamp": datetime.utcnow().isoformat(),
+        "action": "KEY_CONVERSION",
+        "user_ip": user_ip,
+        "public_key_hash": public_key_hash,
+        "success": success,
+        "failure_reason": reason,
+    }))
+```
+
+**日志分析**：
+
+- 监控失败的转换尝试（可能的暴力破解）
+- 识别异常的生成模式
+- 追踪密钥使用统计
+- 检测可疑的 IP 地址
+
+### 6.2 安全事件响应
+
+```python
+def detect_brute_force(ip_address, time_window=3600):
+    """
+    检测暴力破解攻击
+    """
+    recent_failures = get_failed_attempts(ip_address, time_window)
+    
+    if recent_failures > 10:
+        # 触发告警
+        alert_security_team(
+            f"Possible brute force from {ip_address}: "
+            f"{recent_failures} failures in {time_window}s"
+        )
+        
+        # 临时封禁 IP
+        block_ip(ip_address, duration=3600)
+        
+        return True
+    
+    return False
+```
+
+## 7. 数据保护
+
+### 7.1 敏感数据处理
+
+**原则**：
+- 🔴 **私钥**：仅在生成时显示，不记录日志
+- 🟠 **转换密钥**：不存储，不记录日志
+- 🟡 **公钥**：可以记录哈希值
+- 🟢 **服务器 URL**：可以记录
+
+```python
+def sanitize_log_data(data):
+    """
+    清理日志数据，移除敏感信息
+    """
+    sensitive_keys = ['private_key', 'transfer_key', 'transfer_keys']
+    
+    sanitized = data.copy()
+    for key in sensitive_keys:
+        if key in sanitized:
+            sanitized[key] = '***REDACTED***'
+    
+    return sanitized
+```
+
+### 7.2 内存安全
+
+```python
+import ctypes
+
+def secure_delete(data):
+    """
+    安全删除内存中的敏感数据
+    """
+    if isinstance(data, str):
+        data = data.encode()
+    
+    # 覆盖内存
+    location = id(data)
+    size = len(data)
+    ctypes.memset(location, 0, size)
+    
+    # 删除引用
+    del data
+
+# 使用示例
+private_key = generate_private_key()
+# ... 使用私钥 ...
+secure_delete(private_key)
+```
+
+## 8. 安全测试
+
+### 8.1 渗透测试检查清单
+
+- [ ] 尝试暴力破解转换密钥
+- [ ] 尝试修改系统时间绕过限制
+- [ ] 尝试 SQL 注入（如使用数据库）
+- [ ] 尝试 XSS 攻击
+- [ ] 尝试 CSRF 攻击
+- [ ] 尝试中间人攻击
+- [ ] 测试速率限制是否生效
+- [ ] 测试证书验证
+- [ ] 测试错误信息是否泄露敏感信息
+
+### 8.2 安全审计
+
+定期进行：
+- 代码审计
+- 依赖库漏洞扫描
+- 配置审查
+- 日志审查
+- 渗透测试
+
+## 9. 合规性
+
+### 9.1 数据保护法规
+
+根据使用场景，可能需要遵守：
+- GDPR（欧盟）
+- CCPA（加利福尼亚）
+- 中国《数据安全法》
+- 中国《个人信息保护法》
+
+### 9.2 加密标准
+
+- ✅ TPM 2.0：ISO/IEC 11889
+- ✅ AES-256：FIPS 197
+- ✅ SHA-256：FIPS 180-4
+- ✅ TLS 1.2/1.3：RFC 5246/8446
+
+## 10. 安全最佳实践
+
+### 开发阶段
+1. ✅ 遵循安全编码规范
+2. ✅ 代码审查关注安全问题
+3. ✅ 使用静态代码分析工具
+4. ✅ 定期更新依赖库
+
+### 部署阶段
+1. ✅ 使用最小权限原则
+2. ✅ 启用所有安全功能
+3. ✅ 配置防火墙和 IDS
+4. ✅ 定期备份（不包括 TPM 密钥）
+
+### 运维阶段
+1. ✅ 监控安全事件
+2. ✅ 定期安全审计
+3. ✅ 及时应用安全补丁
+4. ✅ 制定安全事件响应计划
+
+---
+
+**安全是一个持续的过程，而非一次性任务。**

@@ -1,0 +1,39 @@
+# Python 依赖包
+
+## 核心依赖
+
+flask>=2.3.0
+flask-cors>=4.0.0
+gunicorn>=21.2.0
+
+## TPM 相关
+tpm2-pytss>=1.2.0
+
+## 加密库
+cryptography>=41.0.0
+
+## 数据验证
+pydantic>=2.0.0
+
+## 环境配置
+python-dotenv>=1.0.0
+
+## HTTP 客户端
+requests>=2.31.0
+
+## 日志
+python-json-logger>=2.0.7
+
+## 时间处理
+python-dateutil>=2.8.2
+
+## 开发依赖
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.7.0
+flake8>=6.1.0
+mypy>=1.5.0
+pre-commit>=3.3.3
+
+## 类型提示
+types-requests>=2.31.0
