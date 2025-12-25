@@ -622,7 +622,9 @@ PUB_eyJ2ZXJzaW9uIjoxLCJkYXRhIjoiLi4uIn0=
 TK-A8f9e2d1c4b5a6d7e8f9
 ```
 
-文件命名建议：`transfer_key_N.tkn`（N 为序号，从 1 开始）
+文件命名建议：`transfer_key_1.tkn`、`transfer_key_2.tkn` 等
+
+文件名中的序号仅用于用户识别和管理，系统使用时支持任意顺序输入，无需按序号排列。
 
 ### 批量转换密钥包 (`.zip`)
 
