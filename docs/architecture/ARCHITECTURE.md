@@ -40,7 +40,12 @@ KCS (Key Conversion System) 是一个基于 TPM 的安全密钥转换系统，�
 
 ### 2.1 前端模块 (Frontend)
 
-**技术栈建议**：React/Vue.js + TypeScript + Tailwind CSS
+**技术栈**：React 18+ + TypeScript + Vite
+
+选择理由：
+- React 生态成熟，组件丰富，易于开发和维护
+- TypeScript 提供类型安全，减少运行时错误
+- Vite 构建速度快，开发体验好，配置简单
 
 **主要组件**：
 - `KeyGenerationPage`: 密钥生成页面
@@ -52,7 +57,14 @@ KCS (Key Conversion System) 是一个基于 TPM 的安全密钥转换系统，�
 
 ### 2.2 后端模块 (Backend)
 
-**技术栈建议**：Python (Flask/FastAPI) 或 Go
+**技术栈**：Python 3.9+ + FastAPI
+
+选择理由：
+- FastAPI 自动生成 OpenAPI 文档，便于 API 调试和集成
+- 原生支持异步操作，性能优于 Flask
+- 内置数据验证（Pydantic），减少手动验证代码
+- 类型提示友好，代码可读性强
+- 部署简单（Uvicorn/Gunicorn），支持热重载
 
 **核心子模块**：
 
@@ -81,9 +93,64 @@ KCS (Key Conversion System) 是一个基于 TPM 的安全密钥转换系统，�
 - `time_models.py`: 时间窗口模型
 
 #### 2.2.5 工具模块 (`backend/src/utils/`)
-- `logger.py`: 日志记录
+- `logger.py`: 日志记录（详见日志规范）
 - `error_handler.py`: 错误处理
 - `config_loader.py`: 配置加载
+
+## 2.3 日志模块规范
+
+**日志框架**：使用 Python 标准库 `logging` + `python-json-logger`
+
+**日志级别和用途**：
+- `DEBUG`: 开发调试信息（仅开发环境）
+- `INFO`: 正常操作记录（API 调用、系统状态）
+- `WARNING`: 警告信息（失败的验证尝试、异常请求）
+- `ERROR`: 错误信息（系统错误、TPM 故障）
+- `CRITICAL`: 严重错误（系统崩溃、安全事件）
+
+**日志存储内容（允许记录）**：
+- ✅ 时间戳
+- ✅ 操作类型（生成密钥、转换密钥）
+- ✅ 客户端 IP 地址
+- ✅ 请求参数（密钥长度、时间窗口配置）
+- ✅ 操作结果（成功/失败）
+- ✅ 失败原因（时间不匹配、URL 不匹配等）
+- ✅ 公钥哈希值（SHA256）
+- ✅ TPM 操作耗时
+- ✅ 系统性能指标
+
+**严禁记录的敏感信息**：
+- ❌ 私钥（Private Key）
+- ❌ 转换密钥（Transfer Key）
+- ❌ 公钥完整内容（仅记录哈希）
+- ❌ 核心密钥句柄详细信息
+- ❌ TPM 内部密钥材料
+- ❌ 任何可用于恢复私钥的中间值
+
+**日志格式（JSON）**：
+```json
+{
+  "timestamp": "2024-01-01T12:00:00.000Z",
+  "level": "INFO",
+  "action": "KEY_GENERATION",
+  "client_ip": "192.168.1.100",
+  "request_params": {
+    "key_length": 12,
+    "transfer_keys_count": 1,
+    "time_window_days": 365
+  },
+  "result": "success",
+  "public_key_hash": "sha256:abc123...",
+  "duration_ms": 245
+}
+```
+
+**日志文件管理**：
+- 应用日志：`/var/log/kcs/app.log`
+- 审计日志：`/var/log/kcs/audit.log`
+- 错误日志：`/var/log/kcs/error.log`
+- 日志轮转：每天轮转，保留 30 天
+- 日志权限：仅 kcs 用户可读写（chmod 600）
 
 ## 3. 数据流
 

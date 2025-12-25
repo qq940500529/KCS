@@ -94,18 +94,19 @@ pip install --upgrade pip
 ### 2.4 安装 Python 依赖
 
 ```bash
-# 安装核心依赖（需要先创建 requirements.txt）
+# 安装核心依赖
 pip install -r requirements.txt
 
 # 如果 requirements.txt 不存在，手动安装核心包
 pip install \
-    flask \
-    flask-cors \
+    fastapi \
+    uvicorn[standard] \
     tpm2-pytss \
     cryptography \
     pydantic \
     python-dotenv \
-    requests
+    python-json-logger \
+    slowapi
 ```
 
 ### 2.5 配置 TPM 模拟器（开发环境）
@@ -176,15 +177,19 @@ mkdir -p backend/data
 ### 2.8 运行后端服务
 
 ```bash
-# 开发模式运行
+# 开发模式运行（FastAPI + Uvicorn）
 cd backend
-python src/main.py
+uvicorn src.main:app --reload --host 0.0.0.0 --port 5000
 
-# 或使用 Flask 命令
-export FLASK_APP=src/main.py
-export FLASK_ENV=development
-flask run --host=0.0.0.0 --port=5000
+# 或使用 Python 直接运行
+python src/main.py
 ```
+
+**FastAPI 优势**：
+- 自动生成交互式 API 文档：访问 `http://localhost:5000/docs`
+- 自动生成 ReDoc 文档：访问 `http://localhost:5000/redoc`
+- 内置数据验证和类型检查
+- 原生异步支持，性能更好
 
 ## 3. 前端开发环境搭建
 

@@ -359,61 +359,102 @@ server {
 
 ### 5.3 API 安全
 
-**速率限制**：
+**速率限制（FastAPI + SlowAPI）**：
 
 ```python
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
+from fastapi import FastAPI, Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-limiter = Limiter(
-    app,
-    key_func=get_remote_address,
-    default_limits=["200 per day", "50 per hour"]
-)
+app = FastAPI()
 
-@app.route("/api/v1/keys/generate", methods=["POST"])
-@limiter.limit("10 per hour")  # 密钥生成限制更严格
-def generate_keys():
+# 配置速率限制器
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+@app.post("/api/v1/keys/generate")
+@limiter.limit("10/hour")  # 密钥生成限制更严格
+async def generate_keys(request: Request):
     pass
 
-@app.route("/api/v1/keys/convert", methods=["POST"])
-@limiter.limit("100 per hour")  # 转换稍宽松
-def convert_keys():
+@app.post("/api/v1/keys/convert")
+@limiter.limit("100/hour")  # 转换稍宽松
+async def convert_keys(request: Request):
     pass
 ```
 
-**输入验证**：
+**输入验证（Pydantic 自动验证）**：
 
 ```python
-from pydantic import BaseModel, Field, validator
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field, field_validator
+from datetime import datetime
+
+app = FastAPI()
+
+class TimeWindow(BaseModel):
+    start: datetime
+    end: datetime
 
 class KeyGenerationRequest(BaseModel):
-    private_key_length: int = Field(..., ge=6, le=16)
-    transfer_keys_count: int = Field(..., ge=1, le=5)
-    time_window: dict
+    private_key_length: int = Field(..., ge=6, le=16, description="私钥长度，6-16位")
+    transfer_keys_count: int = Field(..., ge=1, le=5, description="转换密钥数量，1-5个")
+    time_window: TimeWindow
     
-    @validator('time_window')
-    def validate_time_window(cls, v):
-        if 'start' not in v or 'end' not in v:
-            raise ValueError("Missing start or end time")
-        
-        start = parse_timestamp(v['start'])
-        end = parse_timestamp(v['end'])
-        
-        if start >= end:
+    @field_validator('time_window')
+    @classmethod
+    def validate_time_window(cls, v: TimeWindow) -> TimeWindow:
+        if v.start >= v.end:
             raise ValueError("Start time must be before end time")
         
-        if end - start > 365 * 24 * 3600:  # 最长1年
-            raise ValueError("Time window too large")
+        duration = (v.end - v.start).total_seconds()
+        if duration > 365 * 24 * 3600:  # 最长1年
+            raise ValueError("Time window too large (max 1 year)")
         
         return v
+
+# FastAPI 会自动验证并返回清晰的错误消息
+@app.post("/api/v1/keys/generate")
+async def generate_keys(request: KeyGenerationRequest):
+    # 数据已自动验证，类型安全
+    return {"status": "success"}
+```
+
+**FastAPI 验证优势**：
+- ✅ 自动类型检查和转换
+- ✅ 清晰的错误消息（422 Unprocessable Entity）
+- ✅ 自动生成文档中的参数说明
+- ✅ IDE 支持自动完成和类型提示
 ```
 
 ## 6. 审计与日志
 
-### 6.1 审计日志
+### 6.1 日志记录规范
 
-**记录的操作**：
+**日志框架**：Python `logging` + `python-json-logger`（结构化日志）
+
+**日志分类**：
+
+1. **应用日志** (`/var/log/kcs/app.log`)
+   - 记录内容：系统启动/停止、配置加载、健康检查
+   - 级别：INFO, WARNING, ERROR
+   - 不含敏感信息
+
+2. **审计日志** (`/var/log/kcs/audit.log`)
+   - 记录内容：所有密钥操作（生成、转换）
+   - 级别：INFO（成功操作）、WARNING（失败尝试）
+   - **严禁记录私钥、转换密钥**
+
+3. **安全日志** (`/var/log/kcs/security.log`)
+   - 记录内容：可疑活动、暴力破解尝试、异常访问
+   - 级别：WARNING, ERROR, CRITICAL
+   - 用于安全监控和告警
+
+### 6.2 审计日志详细说明
+
+**允许记录的信息**：
 
 ```python
 import logging
@@ -425,40 +466,122 @@ audit_logger = logging.getLogger('audit')
 def log_key_generation(user_ip, request_data, result):
     """
     记录密钥生成操作
+    
+    记录内容：
+    - 时间戳、操作类型、客户端 IP
+    - 请求参数（密钥长度、转换密钥数量、时间窗口）
+    - 操作结果（成功/失败）
+    - 公钥哈希值（SHA256，不是公钥本身）
+    
+    不记录：
+    - ❌ 私钥（Private Key）
+    - ❌ 转换密钥（Transfer Key）
+    - ❌ 公钥完整内容
     """
     audit_logger.info(json.dumps({
         "timestamp": datetime.utcnow().isoformat(),
         "action": "KEY_GENERATION",
-        "user_ip": user_ip,
-        "private_key_length": request_data['private_key_length'],
-        "transfer_keys_count": request_data['transfer_keys_count'],
-        "time_window": request_data['time_window'],
+        "client_ip": user_ip,
+        "request_params": {
+            "key_length": request_data['private_key_length'],
+            "transfer_keys_count": request_data['transfer_keys_count'],
+            "time_window_start": request_data['time_window']['start'],
+            "time_window_end": request_data['time_window']['end']
+        },
         "success": result['success'],
-        "public_key_hash": hash(result.get('public_key', '')),
+        "public_key_hash": hashlib.sha256(result.get('public_key', '').encode()).hexdigest(),
+        "duration_ms": result.get('duration_ms', 0)
     }))
 
 def log_key_conversion(user_ip, public_key_hash, success, reason=None):
     """
     记录密钥转换操作
+    
+    记录内容：
+    - 时间戳、操作类型、客户端 IP
+    - 公钥哈希值（用于关联操作，不是公钥本身）
+    - 操作结果和失败原因
+    
+    不记录：
+    - ❌ 转换密钥（Transfer Key）
+    - ❌ 还原出的私钥（Private Key）
+    - ❌ 公钥完整内容
     """
-    audit_logger.warning(json.dumps({
+    log_level = logging.WARNING if not success else logging.INFO
+    audit_logger.log(log_level, json.dumps({
         "timestamp": datetime.utcnow().isoformat(),
         "action": "KEY_CONVERSION",
-        "user_ip": user_ip,
+        "client_ip": user_ip,
         "public_key_hash": public_key_hash,
         "success": success,
-        "failure_reason": reason,
+        "failure_reason": reason if not success else None,
     }))
 ```
 
-**日志分析**：
+**敏感信息过滤**：
+
+```python
+import hashlib
+
+def sanitize_log_data(data):
+    """
+    清理日志数据，移除所有敏感信息
+    
+    此函数确保以下信息永远不会被记录：
+    - 私钥（private_key）
+    - 转换密钥（transfer_key, transfer_keys）
+    - 公钥完整内容（public_key，仅记录哈希）
+    - TPM 内部密钥材料
+    """
+    # 定义所有敏感字段
+    sensitive_keys = [
+        'private_key', 
+        'transfer_key', 
+        'transfer_keys',
+        'public_key',  # 仅记录哈希，不记录完整内容
+        'core_key_material',
+        'tpm_key_handle',
+        'encryption_key',
+        'master_key'
+    ]
+    
+    sanitized = data.copy()
+    
+    # 移除敏感字段
+    for key in sensitive_keys:
+        if key in sanitized:
+            sanitized[key] = '***REDACTED***'
+    
+    # 如果有公钥，替换为哈希值
+    if 'public_key' in data:
+        sanitized['public_key_hash'] = hashlib.sha256(
+            data['public_key'].encode()
+        ).hexdigest()
+    
+    return sanitized
+
+# 使用示例
+def api_handler(request_data):
+    # 业务逻辑
+    result = process_request(request_data)
+    
+    # 记录日志前先清理
+    safe_data = sanitize_log_data(request_data)
+    safe_result = sanitize_log_data(result)
+    
+    logger.info(f"Request: {safe_data}, Result: {safe_result}")
+```
+
+### 6.3 日志分析和监控
+
+**监控指标**：
 
 - 监控失败的转换尝试（可能的暴力破解）
 - 识别异常的生成模式
 - 追踪密钥使用统计
 - 检测可疑的 IP 地址
 
-### 6.2 安全事件响应
+### 6.4 安全事件响应
 
 ```python
 def detect_brute_force(ip_address, time_window=3600):

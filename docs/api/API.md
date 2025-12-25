@@ -2,11 +2,25 @@
 
 ## API 概述
 
-KCS 系统提供 RESTful API 接口，所有接口均使用 JSON 格式进行数据交互。
+KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均使用 JSON 格式进行数据交互。
+
+**技术栈**：FastAPI + Uvicorn + Pydantic
 
 **Base URL**: `https://your-server.com/api/v1`
 
 **认证**: 当前版本为开源工具，暂不需要认证。生产环境建议添加 API Key 或 JWT 认证。
+
+**交互式文档**：
+- Swagger UI: `https://your-server.com/docs`
+- ReDoc: `https://your-server.com/redoc`
+- OpenAPI 规范: `https://your-server.com/openapi.json`
+
+**FastAPI 特性**：
+- ✅ 自动生成交互式 API 文档（Swagger UI）
+- ✅ 自动数据验证（Pydantic）
+- ✅ 类型提示和自动完成
+- ✅ 原生异步支持，性能优异
+- ✅ 简化开发，减少样板代码
 
 ## 通用响应格式
 

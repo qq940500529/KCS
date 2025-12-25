@@ -150,7 +150,7 @@ python -m src.init_core_key --url https://kcs.yourdomain.com
 
 ```ini
 [Unit]
-Description=KCS Backend Service
+Description=KCS Backend Service (FastAPI)
 After=network.target
 
 [Service]
@@ -160,19 +160,20 @@ Group=kcs
 WorkingDirectory=/opt/kcs/backend
 Environment="PATH=/opt/kcs/backend/venv/bin"
 EnvironmentFile=/opt/kcs/backend/.env.production
-ExecStart=/opt/kcs/backend/venv/bin/gunicorn \
+ExecStart=/opt/kcs/backend/venv/bin/uvicorn \
+    src.main:app \
+    --host 127.0.0.1 \
+    --port 5000 \
     --workers 4 \
-    --bind 127.0.0.1:5000 \
-    --timeout 30 \
-    --access-logfile /var/log/kcs/access.log \
-    --error-logfile /var/log/kcs/error.log \
-    src.main:app
+    --log-config /opt/kcs/backend/logging.conf
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+**注意**：FastAPI 使用 Uvicorn ASGI 服务器，比 Flask 的 WSGI 性能更好。
 
 启动服务：
 
