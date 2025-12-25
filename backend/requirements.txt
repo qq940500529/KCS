@@ -1,0 +1,49 @@
+# Python 依赖包
+
+## 核心依赖
+
+# Web 框架 - FastAPI（易于开发，自动生成文档）
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0  # ASGI 服务器
+gunicorn>=21.2.0  # 生产环境进程管理
+
+# CORS 支持
+fastapi-cors>=0.0.6
+
+## TPM 相关
+tpm2-pytss>=1.2.0
+
+## 加密库
+cryptography>=41.0.0
+
+## 数据验证（FastAPI 内置使用 Pydantic）
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+## 环境配置
+python-dotenv>=1.0.0
+
+## HTTP 客户端
+requests>=2.31.0
+httpx>=0.25.0  # FastAPI 推荐的异步 HTTP 客户端
+
+## 日志
+python-json-logger>=2.0.7
+
+## 时间处理
+python-dateutil>=2.8.2
+
+## API 限流
+slowapi>=0.1.9
+
+## 开发依赖
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0  # FastAPI 异步测试支持
+black>=23.7.0
+flake8>=6.1.0
+mypy>=1.5.0
+pre-commit>=3.3.3
+
+## 类型提示
+types-requests>=2.31.0
