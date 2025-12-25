@@ -174,22 +174,74 @@ def generate_private_key(length=12):
 
 **生成机制**：
 ```python
-def generate_transfer_key():
+def generate_transfer_keys(count=1):
     """
-    生成转换密钥
-    格式：TK-{32字节十六进制}
+    生成多个转换密钥
+    
+    Args:
+        count: 转换密钥数量（1-5个）
+    
+    Returns:
+        转换密钥列表
     """
-    random_bytes = secrets.token_bytes(32)
-    hex_string = random_bytes.hex()
-    return f"TK-{hex_string}"
+    if not 1 <= count <= 5:
+        raise ValueError("Transfer key count must be between 1 and 5")
+    
+    transfer_keys = []
+    for i in range(count):
+        # 每个密钥使用 256 位随机数据
+        random_bytes = secrets.token_bytes(32)
+        hex_string = random_bytes.hex()
+        transfer_keys.append(f"TK-{hex_string}")
+    
+    return transfer_keys
 ```
 
 **安全特性**：
-- ✅ 256 位随机数据
-- ✅ 加密级随机数生成器
+- ✅ 每个转换密钥 256 位随机数据
+- ✅ 使用加密级随机数生成器
 - ❌ 不在服务器存储
-- ❌ 不在公钥中明文存储（仅存哈希）
+- ❌ 不在公钥中明文存储（仅存所有密钥的哈希）
 - ⚠️ 用户需安全传输给接收者
+
+**多密钥验证机制**：
+```python
+def verify_transfer_keys(provided_keys, stored_hashes):
+    """
+    验证所有转换密钥
+    
+    Args:
+        provided_keys: 用户提供的转换密钥列表
+        stored_hashes: 公钥中存储的密钥哈希列表
+    
+    Returns:
+        bool: 所有密钥都正确返回 True，否则返回 False
+    """
+    import hashlib
+    
+    # 1. 验证数量
+    if len(provided_keys) != len(stored_hashes):
+        return False
+    
+    # 2. 计算每个密钥的哈希
+    provided_hashes = set()
+    for key in provided_keys:
+        key_hash = hashlib.sha256(key.encode()).hexdigest()
+        provided_hashes.add(key_hash)
+    
+    # 3. 验证所有哈希都匹配（集合比较）
+    stored_hashes_set = set(stored_hashes)
+    
+    # 所有密钥的哈希必须完全匹配
+    return provided_hashes == stored_hashes_set
+```
+
+**安全要求**：
+- ✅ 解密时必须提供所有转换密钥
+- ✅ 所有转换密钥必须完全正确
+- ✅ 转换密钥顺序不影响验证（使用集合比较）
+- ❌ 缺少任何一个密钥都无法解密
+- ❌ 任何一个密钥错误都无法解密
 
 ### 3.4 公钥结构
 
@@ -209,7 +261,11 @@ def generate_transfer_key():
       "end": "timestamp"
     },
     "tpm_time_seed": "integer",
-    "transfer_key_hash": "sha256_hash",
+    "transfer_keys_count": 2,
+    "transfer_keys_hashes": [
+      "sha256_hash_1",
+      "sha256_hash_2"
+    ],
     "created_at": "timestamp"
   }
 }
@@ -218,7 +274,9 @@ def generate_transfer_key():
 **安全特性**：
 - ✅ 使用 AES-256-GCM 认证加密
 - ✅ URL 仅存哈希，防止信息泄露
-- ✅ 转换密钥仅存哈希
+- ✅ 存储转换密钥数量（`transfer_keys_count`）
+- ✅ 存储所有转换密钥的哈希（`transfer_keys_hashes`）
+- ✅ 转换密钥仅存哈希，不存明文
 - ✅ 包含时间绑定信息
 - ✅ Base64 编码便于传输
 

@@ -175,9 +175,14 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 **参数说明**:
 - `private_key_config.length`: 私钥长度，范围 6-16
 - `private_key_config.rules`: 字符集规则
-- `transfer_keys_count`: 转换密钥数量，范围 1-5
+- `transfer_keys_count`: **转换密钥数量，范围 1-5**（推荐生成多个以提高安全性）
 - `time_window`: 允许解密的时间窗口
 - `metadata`: 可选的元数据信息
+
+**重要说明**：
+- 生成的所有转换密钥在解密时**必须全部提供且正确**
+- 建议根据安全需求生成 2-3 个转换密钥
+- 每个转换密钥应分发给不同的授权人员，确保多人授权机制
 
 **响应示例**:
 ```json
@@ -245,17 +250,25 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 
 **POST** `/keys/convert`
 
-使用公钥和转换密钥还原私钥。
+使用公钥和**所有**转换密钥还原私钥。
 
 **请求体**:
 ```json
 {
   "public_key": "PUB_eyJ2ZXJzaW9uIjoxLCJkYXRhIjoiLi4uIn0=",
   "transfer_keys": [
-    "TK-A8f9e2d1c4b5a6d7e8f9"
+    "TK-A8f9e2d1c4b5a6d7e8f9",
+    "TK-B7e8d9c0b1a2f3e4d5c6"
   ]
 }
 ```
+
+**重要要求**：
+- ✅ 必须提供生成时创建的**所有**转换密钥
+- ✅ 所有转换密钥必须**完全正确**
+- ❌ 缺少任何一个转换密钥将导致解密失败
+- ❌ 任何一个转换密钥错误将导致解密失败
+- 转换密钥的顺序不影响解密结果
 
 **响应示例**（成功）:
 ```json
@@ -309,6 +322,38 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 }
 ```
 
+**响应示例**（转换密钥错误或不完整）:
+```json
+{
+  "success": false,
+  "error": {
+    "code": "INVALID_TRANSFER_KEY",
+    "message": "转换密钥验证失败",
+    "details": {
+      "required_count": 2,
+      "provided_count": 1,
+      "reason": "提供的转换密钥数量不足，需要全部 2 个转换密钥"
+    }
+  }
+}
+```
+
+或者：
+```json
+{
+  "success": false,
+  "error": {
+    "code": "INVALID_TRANSFER_KEY",
+    "message": "转换密钥验证失败",
+    "details": {
+      "required_count": 2,
+      "provided_count": 2,
+      "reason": "一个或多个转换密钥不正确，所有转换密钥必须完全正确"
+    }
+  }
+}
+```
+
 ### 3.2 解析公钥信息
 
 **POST** `/keys/parse-public-key`
@@ -334,13 +379,17 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
       "end": "2024-12-31T23:59:59Z"
     },
     "created_at": "2024-01-01T12:00:00Z",
-    "transfer_keys_count": 1,
+    "transfer_keys_count": 2,
     "metadata": {
       "description": "用于加密项目文件"
     }
   }
 }
 ```
+
+**重要信息**：
+- `transfer_keys_count`: 显示生成时创建的转换密钥数量
+- 解密时必须提供对应数量的所有转换密钥
 
 ---
 

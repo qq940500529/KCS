@@ -206,7 +206,7 @@ def get_tpm_time(esapi):
     }
 ```
 
-### 3.4 密钥派生函数 (KDF)
+### 3.4 密钥派生函数 (KDF) - 支持多转换密钥
 
 ```python
 import hashlib
@@ -214,32 +214,79 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 
-def derive_master_key(core_key_material, transfer_key, tpm_time_seed):
+def derive_master_key(core_key_material, transfer_keys, tpm_time_seed):
     """
     派生主密钥，用于加密私钥
+    支持多个转换密钥的组合
     
     Args:
         core_key_material: 核心密钥材料（从 TPM 获取）
-        transfer_key: 转换密钥
+        transfer_keys: 转换密钥列表（所有转换密钥）
         tpm_time_seed: TPM 时间种子
     
     Returns:
         派生的主密钥
     """
-    # 组合输入
-    info = f"KCS-v1-{tpm_time_seed}".encode()
-    salt = transfer_key.encode()
+    # 1. 对所有转换密钥进行排序（确保顺序无关）
+    sorted_keys = sorted(transfer_keys)
     
-    # 使用 HKDF 派生密钥
+    # 2. 组合所有转换密钥
+    combined_keys = '|'.join(sorted_keys).encode()
+    
+    # 3. 计算组合密钥的哈希
+    keys_hash = hashlib.sha256(combined_keys).digest()
+    
+    # 4. 组合输入
+    info = f"KCS-v1-{tpm_time_seed}-{len(transfer_keys)}".encode()
+    
+    # 5. 使用 HKDF 派生密钥
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=salt,
+        salt=keys_hash,  # 使用所有密钥的哈希作为盐
         info=info,
         backend=default_backend()
     )
     
     master_key = hkdf.derive(core_key_material)
+    return master_key
+
+def derive_master_key_alternative(core_key_material, transfer_keys, tpm_time_seed):
+    """
+    替代方案：为每个转换密钥派生子密钥，然后组合
+    这种方式更适合严格的多方授权场景
+    
+    Args:
+        core_key_material: 核心密钥材料（从 TPM 获取）
+        transfer_keys: 转换密钥列表
+        tpm_time_seed: TPM 时间种子
+    
+    Returns:
+        派生的主密钥
+    """
+    sub_keys = []
+    
+    # 为每个转换密钥派生一个子密钥
+    for i, transfer_key in enumerate(transfer_keys):
+        info = f"KCS-v1-{tpm_time_seed}-key-{i}".encode()
+        salt = transfer_key.encode()
+        
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            info=info,
+            backend=default_backend()
+        )
+        
+        sub_key = hkdf.derive(core_key_material)
+        sub_keys.append(sub_key)
+    
+    # 使用 XOR 组合所有子密钥
+    master_key = sub_keys[0]
+    for sub_key in sub_keys[1:]:
+        master_key = bytes(a ^ b for a, b in zip(master_key, sub_key))
+    
     return master_key
 ```
 
@@ -334,10 +381,19 @@ class TPMKeyManager:
         self.esapi = ESAPI()
         self.core_key_handle = 0x81010001
     
-    def generate_key_set(self, private_key, transfer_key, 
+    def generate_key_set(self, private_key, transfer_keys, 
                          time_window, server_url):
         """
-        生成完整的密钥集
+        生成完整的密钥集（支持多个转换密钥）
+        
+        Args:
+            private_key: 私钥字符串
+            transfer_keys: 转换密钥列表（1-5个）
+            time_window: 时间窗口字典
+            server_url: 服务器 URL
+        
+        Returns:
+            公钥字符串
         """
         # 1. 获取 TPM 时间种子
         tpm_time = self.get_tpm_time()
@@ -345,10 +401,10 @@ class TPMKeyManager:
         # 2. 从 TPM 获取核心密钥材料
         core_key_material = self._get_core_key_material()
         
-        # 3. 派生主密钥
-        master_key = derive_master_key(
+        # 3. 使用所有转换密钥派生主密钥
+        master_key = self._derive_master_key_multi(
             core_key_material,
-            transfer_key,
+            transfer_keys,
             tpm_time["clock"]
         )
         
@@ -361,7 +417,14 @@ class TPMKeyManager:
         f = Fernet(fernet_key)
         encrypted_private_key = f.encrypt(private_key.encode())
         
-        # 5. 生成公钥（封装所有信息）
+        # 5. 计算每个转换密钥的哈希
+        import hashlib
+        transfer_keys_hashes = [
+            hashlib.sha256(key.encode()).hexdigest()
+            for key in transfer_keys
+        ]
+        
+        # 6. 生成公钥（封装所有信息）
         public_key_data = {
             "version": 1,
             "encrypted_private_key": base64.b64encode(
@@ -370,9 +433,8 @@ class TPMKeyManager:
             "server_url": server_url,
             "time_window": time_window,
             "tpm_time_seed": tpm_time["clock"],
-            "transfer_key_hash": hashlib.sha256(
-                transfer_key.encode()
-            ).hexdigest()
+            "transfer_keys_count": len(transfer_keys),
+            "transfer_keys_hashes": transfer_keys_hashes
         }
         
         public_key = "PUB_" + base64.b64encode(
@@ -381,36 +443,63 @@ class TPMKeyManager:
         
         return public_key
     
-    def convert_key(self, public_key, transfer_key):
+    def convert_key(self, public_key, transfer_keys):
         """
-        转换公钥为私钥
+        转换公钥为私钥（支持多个转换密钥验证）
+        
+        Args:
+            public_key: 公钥字符串
+            transfer_keys: 用户提供的转换密钥列表
+        
+        Returns:
+            解密的私钥字符串
+        
+        Raises:
+            ValueError: 转换密钥验证失败
         """
+        import json
+        import base64
+        import hashlib
+        
         # 1. 解析公钥
         public_key_data = json.loads(
             base64.b64decode(public_key[4:])
         )
         
-        # 2. 验证转换密钥
-        transfer_key_hash = hashlib.sha256(
-            transfer_key.encode()
-        ).hexdigest()
+        # 2. 验证转换密钥数量
+        required_count = public_key_data["transfer_keys_count"]
+        provided_count = len(transfer_keys)
         
-        if transfer_key_hash != public_key_data["transfer_key_hash"]:
-            raise ValueError("Invalid transfer key")
+        if provided_count != required_count:
+            raise ValueError(
+                f"需要 {required_count} 个转换密钥，但只提供了 {provided_count} 个"
+            )
         
-        # 3. 验证时间
+        # 3. 验证每个转换密钥的哈希
+        stored_hashes = set(public_key_data["transfer_keys_hashes"])
+        provided_hashes = set(
+            hashlib.sha256(key.encode()).hexdigest()
+            for key in transfer_keys
+        )
+        
+        if provided_hashes != stored_hashes:
+            raise ValueError(
+                "一个或多个转换密钥不正确，所有转换密钥必须完全正确"
+            )
+        
+        # 4. 验证时间
         current_time = self.get_tpm_time()
         # ... 时间验证逻辑
         
-        # 4. 重新派生主密钥
+        # 5. 重新派生主密钥（使用所有转换密钥）
         core_key_material = self._get_core_key_material()
-        master_key = derive_master_key(
+        master_key = self._derive_master_key_multi(
             core_key_material,
-            transfer_key,
+            transfer_keys,
             public_key_data["tpm_time_seed"]
         )
         
-        # 5. 解密私钥
+        # 6. 解密私钥
         from cryptography.fernet import Fernet
         fernet_key = base64.urlsafe_b64encode(master_key)
         f = Fernet(fernet_key)
@@ -421,6 +510,30 @@ class TPMKeyManager:
         private_key = f.decrypt(encrypted_private_key).decode()
         
         return private_key
+    
+    def _derive_master_key_multi(self, core_key_material, transfer_keys, tpm_time_seed):
+        """
+        使用多个转换密钥派生主密钥
+        """
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        from cryptography.hazmat.primitives import hashes
+        import hashlib
+        
+        # 对转换密钥排序（确保顺序无关）
+        sorted_keys = sorted(transfer_keys)
+        combined_keys = '|'.join(sorted_keys).encode()
+        keys_hash = hashlib.sha256(combined_keys).digest()
+        
+        info = f"KCS-v1-{tpm_time_seed}-{len(transfer_keys)}".encode()
+        
+        hkdf = HKDF(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=keys_hash,
+            info=info
+        )
+        
+        return hkdf.derive(core_key_material)
     
     def _get_core_key_material(self):
         """
