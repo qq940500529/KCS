@@ -217,11 +217,11 @@ from cryptography.hazmat.backends import default_backend
 def derive_master_key(core_key_material, transfer_keys, tpm_time_seed):
     """
     派生主密钥，用于加密私钥
-    支持多个转换密钥的组合
+    支持任意数量的转换密钥组合，输入顺序无关
     
     Args:
         core_key_material: 核心密钥材料（从 TPM 获取）
-        transfer_keys: 转换密钥列表（所有转换密钥）
+        transfer_keys: 转换密钥列表（所有转换密钥，至少 1 个）
         tpm_time_seed: TPM 时间种子
     
     Returns:
@@ -255,10 +255,11 @@ def derive_master_key_alternative(core_key_material, transfer_keys, tpm_time_see
     """
     替代方案：为每个转换密钥派生子密钥，然后组合
     这种方式更适合严格的多方授权场景
+    支持任意数量的转换密钥，输入顺序无关
     
     Args:
         core_key_material: 核心密钥材料（从 TPM 获取）
-        transfer_keys: 转换密钥列表
+        transfer_keys: 转换密钥列表（至少 1 个）
         tpm_time_seed: TPM 时间种子
     
     Returns:
@@ -289,6 +290,8 @@ def derive_master_key_alternative(core_key_material, transfer_keys, tpm_time_see
     
     return master_key
 ```
+
+**注意**：两种方法都支持任意数量的转换密钥，且输入顺序无关。
 
 ### 3.5 使用 TPM 加密/解密
 
@@ -384,11 +387,11 @@ class TPMKeyManager:
     def generate_key_set(self, private_key, transfer_keys, 
                          time_window, server_url):
         """
-        生成完整的密钥集（支持多个转换密钥）
+        生成完整的密钥集（支持任意数量的转换密钥）
         
         Args:
             private_key: 私钥字符串
-            transfer_keys: 转换密钥列表（1-5个）
+            transfer_keys: 转换密钥列表（至少 1 个，无上限）
             time_window: 时间窗口字典
             server_url: 服务器 URL
         
@@ -401,7 +404,7 @@ class TPMKeyManager:
         # 2. 从 TPM 获取核心密钥材料
         core_key_material = self._get_core_key_material()
         
-        # 3. 使用所有转换密钥派生主密钥
+        # 3. 使用所有转换密钥派生主密钥（自动排序，顺序无关）
         master_key = self._derive_master_key_multi(
             core_key_material,
             transfer_keys,
@@ -445,11 +448,11 @@ class TPMKeyManager:
     
     def convert_key(self, public_key, transfer_keys):
         """
-        转换公钥为私钥（支持多个转换密钥验证）
+        转换公钥为私钥（支持任意数量转换密钥验证，输入顺序无关）
         
         Args:
             public_key: 公钥字符串
-            transfer_keys: 用户提供的转换密钥列表
+            transfer_keys: 用户提供的转换密钥列表（顺序可任意）
         
         Returns:
             解密的私钥字符串
@@ -475,7 +478,7 @@ class TPMKeyManager:
                 f"需要 {required_count} 个转换密钥，但只提供了 {provided_count} 个"
             )
         
-        # 3. 验证每个转换密钥的哈希
+        # 3. 验证每个转换密钥的哈希（顺序无关，使用集合比较）
         stored_hashes = set(public_key_data["transfer_keys_hashes"])
         provided_hashes = set(
             hashlib.sha256(key.encode()).hexdigest()
@@ -491,7 +494,7 @@ class TPMKeyManager:
         current_time = self.get_tpm_time()
         # ... 时间验证逻辑
         
-        # 5. 重新派生主密钥（使用所有转换密钥）
+        # 5. 重新派生主密钥（使用所有转换密钥，自动排序）
         core_key_material = self._get_core_key_material()
         master_key = self._derive_master_key_multi(
             core_key_material,
@@ -514,6 +517,7 @@ class TPMKeyManager:
     def _derive_master_key_multi(self, core_key_material, transfer_keys, tpm_time_seed):
         """
         使用多个转换密钥派生主密钥
+        支持任意数量的转换密钥，输入顺序无关
         """
         from cryptography.hazmat.primitives.kdf.hkdf import HKDF
         from cryptography.hazmat.primitives import hashes

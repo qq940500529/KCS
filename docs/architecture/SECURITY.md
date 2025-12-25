@@ -179,13 +179,13 @@ def generate_transfer_keys(count=1):
     生成多个转换密钥
     
     Args:
-        count: 转换密钥数量（1-5个）
+        count: 转换密钥数量（至少 1 个，无上限）
     
     Returns:
         转换密钥列表
     """
-    if not 1 <= count <= 5:
-        raise ValueError("Transfer key count must be between 1 and 5")
+    if count < 1:
+        raise ValueError("Transfer key count must be at least 1")
     
     transfer_keys = []
     for i in range(count):
@@ -211,7 +211,7 @@ def verify_transfer_keys(provided_keys, stored_hashes):
     验证所有转换密钥
     
     Args:
-        provided_keys: 用户提供的转换密钥列表
+        provided_keys: 用户提供的转换密钥列表（顺序可任意）
         stored_hashes: 公钥中存储的密钥哈希列表
     
     Returns:
@@ -223,13 +223,13 @@ def verify_transfer_keys(provided_keys, stored_hashes):
     if len(provided_keys) != len(stored_hashes):
         return False
     
-    # 2. 计算每个密钥的哈希
+    # 2. 计算每个密钥的哈希（顺序无关，使用集合）
     provided_hashes = set()
     for key in provided_keys:
         key_hash = hashlib.sha256(key.encode()).hexdigest()
         provided_hashes.add(key_hash)
     
-    # 3. 验证所有哈希都匹配（集合比较）
+    # 3. 验证所有哈希都匹配（集合比较，自动处理顺序）
     stored_hashes_set = set(stored_hashes)
     
     # 所有密钥的哈希必须完全匹配
@@ -239,7 +239,8 @@ def verify_transfer_keys(provided_keys, stored_hashes):
 **安全要求**：
 - ✅ 解密时必须提供所有转换密钥
 - ✅ 所有转换密钥必须完全正确
-- ✅ 转换密钥顺序不影响验证（使用集合比较）
+- ✅ **输入顺序无关**：转换密钥可任意顺序提供（使用集合比较）
+- ✅ 支持任意数量的转换密钥（至少 1 个）
 - ❌ 缺少任何一个密钥都无法解密
 - ❌ 任何一个密钥错误都无法解密
 
@@ -458,7 +459,7 @@ class TimeWindow(BaseModel):
 
 class KeyGenerationRequest(BaseModel):
     private_key_length: int = Field(..., ge=6, le=16, description="私钥长度，6-16位")
-    transfer_keys_count: int = Field(..., ge=1, le=5, description="转换密钥数量，1-5个")
+    transfer_keys_count: int = Field(..., ge=1, description="转换密钥数量，至少 1 个")
     time_window: TimeWindow
     
     @field_validator('time_window')
