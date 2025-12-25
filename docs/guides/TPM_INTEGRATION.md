@@ -390,44 +390,53 @@ class TPMKeyManager:
         生成完整的密钥集（支持任意数量的转换密钥）
         
         Args:
-            private_key: 私钥字符串
+            private_key: 私钥字符串（将被包装为包含时间窗口的 JSON 结构）
             transfer_keys: 转换密钥列表（至少 1 个，无上限）
-            time_window: 时间窗口字典
+            time_window: 时间窗口字典 {"start": ..., "end": ...}
             server_url: 服务器 URL
         
         Returns:
             公钥字符串
         """
-        # 1. 获取 TPM 时间种子
+        import json
+        
+        # 1. 构建包含时间窗口的私钥结构
+        private_key_structure = {
+            "key": private_key,
+            "time_window": time_window
+        }
+        private_key_json = json.dumps(private_key_structure)
+        
+        # 2. 获取 TPM 时间种子
         tpm_time = self.get_tpm_time()
         
-        # 2. 从 TPM 获取核心密钥材料
+        # 3. 从 TPM 获取核心密钥材料
         core_key_material = self._get_core_key_material()
         
-        # 3. 使用所有转换密钥派生主密钥（自动排序，顺序无关）
+        # 4. 使用所有转换密钥派生主密钥（自动排序，顺序无关）
         master_key = self._derive_master_key_multi(
             core_key_material,
             transfer_keys,
             tpm_time["clock"]
         )
         
-        # 4. 加密私钥
+        # 5. 加密私钥（包含时间窗口的完整结构）
         from cryptography.fernet import Fernet
         import base64
         
         # 使用派生的主密钥创建 Fernet 实例
         fernet_key = base64.urlsafe_b64encode(master_key)
         f = Fernet(fernet_key)
-        encrypted_private_key = f.encrypt(private_key.encode())
+        encrypted_private_key = f.encrypt(private_key_json.encode())
         
-        # 5. 计算每个转换密钥的哈希
+        # 6. 计算每个转换密钥的哈希
         import hashlib
         transfer_keys_hashes = [
             hashlib.sha256(key.encode()).hexdigest()
             for key in transfer_keys
         ]
         
-        # 6. 生成公钥（封装所有信息）
+        # 7. 生成公钥（封装所有信息）
         public_key_data = {
             "version": 1,
             "encrypted_private_key": base64.b64encode(
@@ -455,10 +464,11 @@ class TPMKeyManager:
             transfer_keys: 用户提供的转换密钥列表（顺序可任意）
         
         Returns:
-            解密的私钥字符串
+            解密的私钥 JSON 字符串（包含密钥和时间窗口）
         
         Raises:
             ValueError: 转换密钥验证失败
+            SecurityError: 时间窗口不一致（可能存在篡改）
         """
         import json
         import base64
@@ -510,9 +520,23 @@ class TPMKeyManager:
         encrypted_private_key = base64.b64decode(
             public_key_data["encrypted_private_key"]
         )
-        private_key = f.decrypt(encrypted_private_key).decode()
+        private_key_json = f.decrypt(encrypted_private_key).decode()
         
-        return private_key
+        # 7. 验证时间窗口一致性（关键安全步骤）
+        private_key_data = json.loads(private_key_json)
+        private_time_window = private_key_data.get("time_window")
+        public_time_window = public_key_data["time_window"]
+        
+        if private_time_window != public_time_window:
+            raise SecurityError(
+                "TIME_WINDOW_MISMATCH: "
+                "私钥中的时间窗口与公钥中的时间窗口不一致。"
+                f"公钥时间窗口: {public_time_window}, "
+                f"私钥时间窗口: {private_time_window}. "
+                "可能存在篡改！"
+            )
+        
+        return private_key_json
     
     def _derive_master_key_multi(self, core_key_material, transfer_keys, tpm_time_seed):
         """
