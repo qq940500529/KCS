@@ -63,10 +63,10 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 | `TPM_NOT_AVAILABLE` | TPM 不可用 | 503 |
 | `CORE_KEY_NOT_FOUND` | 核心密钥未初始化 | 500 |
 | `TIME_WINDOW_INVALID` | 时间窗口无效 | 400 |
-| `CONVERSION_FAILED` | 密钥转换失败 | 400 |
-| `URL_MISMATCH` | 服务器地址不匹配 | 403 |
+| `TRANSFER_KEY_MISMATCH` | 转换密钥不匹配 | 403 |
+| `SERVER_MISMATCH` | 服务器地址不匹配 | 403 |
 | `TIME_OUT_OF_RANGE` | 不在允许的时间范围内 | 403 |
-| `INVALID_TRANSFER_KEY` | 转换密钥错误 | 403 |
+| `CONVERSION_FAILED` | 密钥转换失败 | 400 |
 | `INTERNAL_ERROR` | 服务器内部错误 | 500 |
 
 ---
@@ -214,6 +214,14 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 }
 ```
 
+**前端功能**：
+
+生成密钥后提供便捷的导出和分发功能：
+
+1. 公钥：支持直接复制或导出为 `.pub` 文件
+2. 转换密钥：支持单独复制或导出为 `.tkn` 文件，可批量打包为 ZIP
+3. 私钥：仅在生成时显示一次，支持复制
+
 ### 2.2 验证私钥格式
 
 **POST** `/api/v1/keys/validate-format`
@@ -259,7 +267,12 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 
 **POST** `/api/v1/keys/convert`
 
-使用公钥和**所有**转换密钥还原私钥。
+使用公钥和所有转换密钥还原私钥。
+
+**前端输入方式**：
+
+1. 公钥：支持手动粘贴或上传 `.pub` 文件
+2. 转换密钥：支持逐个输入、批量粘贴或上传 `.tkn` 文件（含 ZIP 包）
 
 **请求体**:
 ```json
@@ -272,10 +285,10 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 }
 ```
 
-**重要要求**：
-- ✅ 必须提供生成时创建的**所有**转换密钥
-- ✅ 所有转换密钥必须**完全正确**
-- ✅ **输入顺序无关**：密钥可以任意顺序提供，系统自动排序验证
+**验证要求**：
+- ✅ 必须提供生成时创建的所有转换密钥
+- ✅ 所有转换密钥必须完全正确
+- ✅ 输入顺序无关：密钥可任意顺序提供，系统自动排序验证
 - ❌ 缺少任何一个转换密钥将导致解密失败
 - ❌ 任何一个转换密钥错误将导致解密失败
 
@@ -316,49 +329,27 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 }
 ```
 
-**响应示例**（URL 不匹配）:
+**响应示例**（服务器地址不匹配）:
 ```json
 {
   "success": false,
   "error": {
-    "code": "URL_MISMATCH",
-    "message": "请在正确的服务器地址进行解密",
+    "code": "SERVER_MISMATCH",
+    "message": "当前服务器地址不匹配",
     "details": {
-      "current_url": "https://wrong-server.com",
-      "required_url": "https://kcs.example.com"
+      "correct_url": "https://kcs.example.com"
     }
   }
 }
 ```
 
-**响应示例**（转换密钥错误或不完整）:
+**响应示例**（转换密钥不匹配）:
 ```json
 {
   "success": false,
   "error": {
-    "code": "INVALID_TRANSFER_KEY",
-    "message": "转换密钥验证失败",
-    "details": {
-      "required_count": 2,
-      "provided_count": 1,
-      "reason": "提供的转换密钥数量不足，需要全部 2 个转换密钥"
-    }
-  }
-}
-```
-
-或者：
-```json
-{
-  "success": false,
-  "error": {
-    "code": "INVALID_TRANSFER_KEY",
-    "message": "转换密钥验证失败",
-    "details": {
-      "required_count": 2,
-      "provided_count": 2,
-      "reason": "一个或多个转换密钥不正确，所有转换密钥必须完全正确"
-    }
+    "code": "TRANSFER_KEY_MISMATCH",
+    "message": "转换密钥不匹配"
   }
 }
 ```
@@ -611,10 +602,41 @@ generateKeys().then(result => {
 
 ---
 
+## 文件格式规范
+
+### 公钥文件格式 (`.pub`)
+
+公钥文件为纯文本格式，包含完整的公钥字符串：
+
+```
+PUB_eyJ2ZXJzaW9uIjoxLCJkYXRhIjoiLi4uIn0=
+```
+
+文件命名建议：`key_YYYYMMDD_HHMMSS.pub`
+
+### 转换密钥文件格式 (`.tkn`)
+
+转换密钥文件为纯文本格式，包含单个转换密钥：
+
+```
+TK-A8f9e2d1c4b5a6d7e8f9
+```
+
+文件命名建议：`transfer_key_1.tkn`、`transfer_key_2.tkn` 等
+
+文件名中的序号仅用于用户识别和管理，系统使用时支持任意顺序输入，无需按序号排列。
+
+### 批量转换密钥包 (`.zip`)
+
+包含多个 `.tkn` 文件的 ZIP 压缩包，用于批量分发转换密钥。
+
+---
+
 ## 注意事项
 
-1. **HTTPS 必需**：生产环境必须使用 HTTPS 协议
-2. **速率限制**：建议实施 API 速率限制防止滥用
-3. **日志记录**：所有敏感操作应记录审计日志
-4. **错误处理**：客户端应妥善处理各种错误情况
-5. **私钥安全**：私钥应仅在需要时显示，不应长期存储在客户端
+1. HTTPS 必需：生产环境必须使用 HTTPS 协议
+2. 速率限制：建议实施 API 速率限制防止滥用
+3. 日志记录：所有敏感操作应记录审计日志
+4. 错误处理：客户端应妥善处理各种错误情况
+5. 私钥安全：私钥应仅在需要时显示，不应长期存储在客户端
+6. 文件安全：导出的公钥和转换密钥文件应妥善保管，避免泄露
