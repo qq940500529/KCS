@@ -65,9 +65,27 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 | `TIME_WINDOW_INVALID` | 时间窗口无效 | 400 |
 | `TRANSFER_KEY_MISMATCH` | 转换密钥不匹配 | 403 |
 | `SERVER_MISMATCH` | 服务器地址不匹配 | 403 |
-| `TIME_OUT_OF_RANGE` | 不在允许的时间范围内 | 403 |
-| `CONVERSION_FAILED` | 密钥转换失败 | 400 |
+| `TIME_OUT_OF_RANGE` | 不在允许的时间范围内（应用层检查） | 403 |
+| `TIME_POLICY_DENIED` | TPM Policy 时间约束不满足（硬件层拒绝） | 403 |
+| `TPM_POLICY_FAILURE` | TPM Policy 验证失败（通用） | 500 |
+| `TPM_CLOCK_RESET_DETECTED` | 检测到 TPM 时钟重置，时间锚点失效 | 409 |
+| `TPM_POLICY_NOT_ENABLED` | 公钥未启用 TPM Policy | 400 |
+| `SEALED_OBJECT_LOAD_FAILED` | 加载 sealed object 失败 | 500 |
+| `POLICY_SESSION_FAILED` | 启动或执行 policy session 失败 | 500 |
+| `UNSEALED_FAILED` | Unseal 操作失败 | 500 |
+| `CONVERSION_FAILED` | 密钥转换失败（通用） | 400 |
 | `INTERNAL_ERROR` | 服务器内部错误 | 500 |
+
+### 错误码说明
+
+**时间相关错误区分**：
+- `TIME_OUT_OF_RANGE`: 应用层时间检查失败（攻击者修改代码可绕过）
+- `TIME_POLICY_DENIED`: TPM Policy 硬件层时间检查失败（无法绕过）
+
+**TPM Policy 相关错误**：
+- `TIME_POLICY_DENIED`: 最常见的 policy 失败，表示当前 TPM clock 不在允许的时间窗口内
+- `TPM_CLOCK_RESET_DETECTED`: TPM reset_count 变化，之前的时间锚点失效，需要重新生成密钥
+- `TPM_POLICY_FAILURE`: 其他 TPM Policy 相关错误
 
 ---
 
@@ -170,6 +188,9 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
     "start": "2024-01-01T00:00:00Z",
     "end": "2024-12-31T23:59:59Z"
   },
+  "tpm_policy": {
+    "enabled": false
+  },
   "metadata": {
     "description": "用于加密项目文件",
     "creator": "用户名（可选）"
@@ -182,7 +203,18 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 - `private_key_config.rules`: 字符集规则
 - `transfer_keys_count`: **转换密钥数量，至少 1 个，无上限**（建议 2-10 个）
 - `time_window`: 允许解密的时间窗口
+- `tpm_policy.enabled`: **是否启用 TPM Policy 强制时间窗口**（可选，默认 false）
 - `metadata`: 可选的元数据信息
+
+**TPM Policy 配置说明**：
+- `enabled: false` (默认): 应用层时间验证（时间参与密钥派生）
+- `enabled: true`: TPM Policy 硬件层强制时间窗口（PolicyCounterTimer）
+
+**安全级别对比**：
+| 配置 | 防护能力 | 适用场景 |
+|------|---------|---------|
+| `enabled: false` | 应用层防护 | 常规场景，信任服务器管理员 |
+| `enabled: true` | 硬件层不可绕过 | 高安全场景，防止代码修改攻击 |
 
 **重要说明**：
 - 生成的所有转换密钥在解密时**必须全部提供且正确**
@@ -192,6 +224,7 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
   - **5-10 个**：中型组织或多部门授权
   - **10+ 个**：大型组织或高安全性要求场景
 - 每个转换密钥应分发给不同的授权人员，确保多人授权机制
+- **TPM Policy** 需要真实 TPM 2.0 硬件，swtpm 仅用于开发测试
 
 **响应示例**:
 ```json
@@ -354,6 +387,35 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 }
 ```
 
+**响应示例**（TPM Policy 时间约束不满足）:
+```json
+{
+  "success": false,
+  "error": {
+    "code": "TIME_POLICY_DENIED",
+    "message": "TPM Policy 时间约束不满足，硬件层拒绝 unseal",
+    "details": {
+      "current_tick": 1500000000,
+      "allowed_window": {
+        "start_tick": 1000000,
+        "end_tick": 1200000
+      }
+    }
+  }
+}
+```
+
+**响应示例**（TPM 时钟重置检测）:
+```json
+{
+  "success": false,
+  "error": {
+    "code": "TPM_CLOCK_RESET_DETECTED",
+    "message": "检测到 TPM 时钟已重置，时间锚点失效，请重新生成密钥"
+  }
+}
+```
+
 ### 3.2 解析公钥信息
 
 **POST** `/api/v1/keys/parse-public-key`
@@ -380,6 +442,14 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
     },
     "created_at": "2024-01-01T12:00:00Z",
     "transfer_keys_count": 2,
+    "tpm_policy": {
+      "enabled": true,
+      "type": "PolicyCounterTimer",
+      "time_window_ticks": {
+        "start_tick": 1000000,
+        "end_tick": 2000000
+      }
+    },
     "metadata": {
       "description": "用于加密项目文件"
     }
@@ -389,6 +459,8 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 
 **重要信息**：
 - `transfer_keys_count`: 显示生成时创建的转换密钥数量
+- `tpm_policy.enabled`: 是否启用了 TPM Policy 强制时间窗口
+- `tpm_policy.type`: Policy 类型（如 PolicyCounterTimer）
 - 解密时必须提供对应数量的所有转换密钥
 
 ---
