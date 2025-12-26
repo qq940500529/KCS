@@ -45,9 +45,9 @@ KCS 支持多种部署架构：
   Get-Tpm
   ```
 
-**TPM Policy 强制时间窗口额外要求**（可选，高安全场景）：
+**TPM Policy 强制时间窗口要求**（推荐配置）：
 
-如果需要启用 TPM Policy（PolicyCounterTimer）实现硬件层不可绕过的时间窗口控制：
+系统采用 TPM Policy（PolicyCounterTimer）实现硬件层不可绕过的时间窗口控制，需要满足以下要求：
 
 - ✅ **真实 TPM 2.0 硬件**：必须使用物理 TPM 芯片（swtpm 仅用于开发测试）
 - ✅ **TPM 固件版本**：无已知安全漏洞（检查 CVE）
@@ -59,8 +59,8 @@ KCS 支持多种部署架构：
 **安全级别对比**：
 | 配置 | TPM 要求 | 防护能力 |
 |------|---------|---------|
+| TPM Policy 强制（推荐） | TPM 2.0 + 上述完整配置 | 硬件层不可绕过，防止代码修改攻击 |
 | 应用层时间验证 | TPM 2.0（基础） | 防止时间篡改，但代码可修改 |
-| TPM Policy 强制 | TPM 2.0 + 上述额外配置 | 硬件层不可绕过，防止代码修改攻击 |
 
 ## 3. 软件要求
 
@@ -132,8 +132,8 @@ TPM_ENABLED=true
 TPM_SIMULATOR=false
 TPM_DEVICE=/dev/tpm0
 
-# TPM Policy 配置（可选，高安全场景）
-TPM_POLICY_ENABLED=false  # 设置为 true 启用 TPM Policy 强制时间窗口
+# TPM Policy 配置（推荐启用）
+TPM_POLICY_ENABLED=true  # 启用 TPM Policy 硬件层强制时间窗口
 TPM_POLICY_TYPE=PolicyCounterTimer  # Policy 类型
 
 # 核心密钥配置
@@ -156,9 +156,9 @@ TIMEOUT=30
 ```
 
 **TPM Policy 配置说明**：
-- `TPM_POLICY_ENABLED=false`: 使用应用层时间验证（默认）
-- `TPM_POLICY_ENABLED=true`: 启用 TPM Policy 硬件层强制时间窗口
-- 启用 TPM Policy 需要确保 TPM 2.3 节列出的额外要求全部满足
+- `TPM_POLICY_ENABLED=true`（推荐）: 启用 TPM Policy 硬件层强制时间窗口
+- `TPM_POLICY_ENABLED=false`: 使用应用层时间验证（仅限信任环境）
+- 启用 TPM Policy 需要确保 TPM 2.3 节列出的完整要求全部满足
 
 ### 4.3 初始化 TPM 核心密钥
 
@@ -172,7 +172,7 @@ source venv/bin/activate
 python -m src.init_core_key --url https://kcs.yourdomain.com
 ```
 
-**如果启用 TPM Policy，额外需要创建 SRK**：
+**TPM Policy 所需的 SRK 初始化**：
 
 ```bash
 # 创建 Storage Root Key（如果尚未创建）

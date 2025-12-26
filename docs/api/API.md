@@ -189,7 +189,7 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
     "end": "2024-12-31T23:59:59Z"
   },
   "tpm_policy": {
-    "enabled": false
+    "enabled": true
   },
   "metadata": {
     "description": "用于加密项目文件",
@@ -203,18 +203,18 @@ KCS 系统基于 **FastAPI** 框架提供 RESTful API 接口，所有接口均�
 - `private_key_config.rules`: 字符集规则
 - `transfer_keys_count`: **转换密钥数量，至少 1 个，无上限**（建议 2-10 个）
 - `time_window`: 允许解密的时间窗口
-- `tpm_policy.enabled`: **是否启用 TPM Policy 强制时间窗口**（可选，默认 false）
+- `tpm_policy.enabled`: **是否启用 TPM Policy 强制时间窗口**（建议启用以防止代码修改攻击）
 - `metadata`: 可选的元数据信息
 
 **TPM Policy 配置说明**：
-- `enabled: false` (默认): 应用层时间验证（时间参与密钥派生）
-- `enabled: true`: TPM Policy 硬件层强制时间窗口（PolicyCounterTimer）
+- `enabled: true`（推荐）: TPM Policy 硬件层强制时间窗口（PolicyCounterTimer）
+- `enabled: false`: 应用层时间验证（时间参与密钥派生，但可被代码修改绕过）
 
 **安全级别对比**：
 | 配置 | 防护能力 | 适用场景 |
 |------|---------|---------|
-| `enabled: false` | 应用层防护 | 常规场景，信任服务器管理员 |
-| `enabled: true` | 硬件层不可绕过 | 高安全场景，防止代码修改攻击 |
+| `enabled: true` | 硬件层不可绕过 | 推荐配置，防止代码修改攻击 |
+| `enabled: false` | 应用层防护 | 仅限信任服务器管理员的环境 |
 
 **重要说明**：
 - 生成的所有转换密钥在解密时**必须全部提供且正确**
