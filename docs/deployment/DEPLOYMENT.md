@@ -33,6 +33,7 @@ KCS 支持多种部署架构：
 
 ### 2.3 TPM 要求
 
+**基础要求**：
 - **必须**：服务器配备 TPM 2.0 芯片
 - **验证方法**：
   ```bash
@@ -43,6 +44,23 @@ KCS 支持多种部署架构：
   # Windows
   Get-Tpm
   ```
+
+**TPM Policy 强制时间窗口要求**（推荐配置）：
+
+系统采用 TPM Policy（PolicyCounterTimer）实现硬件层不可绕过的时间窗口控制，需要满足以下要求：
+
+- ✅ **真实 TPM 2.0 硬件**：必须使用物理 TPM 芯片（swtpm 仅用于开发测试）
+- ✅ **TPM 固件版本**：无已知安全漏洞（检查 CVE）
+- ✅ **TPM 所有权**：正确配置 TPM 所有权和授权层级
+- ✅ **SRK 配置**：Storage Root Key 已创建且设置 FIXEDTPM 和 FIXEDPARENT
+- ✅ **TPM 访问权限**：应用程序有权限访问 TPM 设备
+- ✅ **部署隔离**：服务器物理访问受控，防止硬件攻击
+
+**安全级别对比**：
+| 配置 | TPM 要求 | 防护能力 |
+|------|---------|---------|
+| TPM Policy 强制（推荐） | TPM 2.0 + 上述完整配置 | 硬件层不可绕过，防止代码修改攻击 |
+| 应用层时间验证 | TPM 2.0（基础） | 防止时间篡改，但代码可修改 |
 
 ## 3. 软件要求
 
@@ -114,9 +132,14 @@ TPM_ENABLED=true
 TPM_SIMULATOR=false
 TPM_DEVICE=/dev/tpm0
 
+# TPM Policy 配置（推荐启用）
+TPM_POLICY_ENABLED=true  # 启用 TPM Policy 硬件层强制时间窗口
+TPM_POLICY_TYPE=PolicyCounterTimer  # Policy 类型
+
 # 核心密钥配置
 CORE_KEY_LABEL=kcs-core-key-v1
 CORE_KEY_HANDLE=0x81010001
+SRK_HANDLE=0x81000001  # Storage Root Key 句柄（用于 sealed object）
 
 # 日志配置
 LOG_LEVEL=INFO
@@ -132,6 +155,11 @@ MAX_REQUESTS=1000
 TIMEOUT=30
 ```
 
+**TPM Policy 配置说明**：
+- `TPM_POLICY_ENABLED=true`（推荐）: 启用 TPM Policy 硬件层强制时间窗口
+- `TPM_POLICY_ENABLED=false`: 使用应用层时间验证（仅限信任环境）
+- 启用 TPM Policy 需要确保 TPM 2.3 节列出的完整要求全部满足
+
 ### 4.3 初始化 TPM 核心密钥
 
 ```bash
@@ -142,6 +170,21 @@ tpm2_getcap properties-fixed
 cd /opt/kcs/backend
 source venv/bin/activate
 python -m src.init_core_key --url https://kcs.yourdomain.com
+```
+
+**TPM Policy 所需的 SRK 初始化**：
+
+```bash
+# 创建 Storage Root Key（如果尚未创建）
+tpm2_createprimary -C o -g sha256 -G rsa -c srk.ctx
+
+# 持久化 SRK
+tpm2_evictcontrol -C o -c srk.ctx 0x81000001
+
+# 验证 SRK 属性
+tpm2_readpublic -c 0x81000001
+
+# 确认 FIXEDTPM 和 FIXEDPARENT 属性已设置
 ```
 
 ### 4.4 设置 Systemd 服务
@@ -587,6 +630,36 @@ sudo chown kcs:kcs /dev/tpm0
 # 检查 TPM 所有权
 tpm2_getcap handles-all
 ```
+
+**TPM Policy 额外安全措施**（如果启用）：
+
+```bash
+# 1. 验证 SRK 属性
+tpm2_readpublic -c ${SRK_HANDLE} | grep -i "fixedtpm\|fixedparent"
+
+# 2. 禁用 TPM debug 模式（如果支持）
+# 具体命令取决于 TPM 厂商
+
+# 3. 检查 TPM 固件版本
+tpm2_getcap properties-fixed | grep "TPM_PT_FIRMWARE_VERSION"
+
+# 4. 定期检查 TPM 事件日志
+tpm2_eventlog /sys/kernel/security/tpm0/binary_bios_measurements
+
+# 5. 监控 TPM reset_count 和 restart_count
+# 添加监控脚本检测异常变化
+```
+
+**物理安全**：
+- 限制服务器机房访问
+- 启用机箱入侵检测
+- 考虑使用带 TPM 的服务器机型（Dell, HP, Lenovo 等）
+- 防止物理 TPM 攻击（如冷启动攻击、总线嗅探）
+
+**监控和告警**：
+- 监控 TPM Policy 验证失败次数
+- 告警 TPM 时钟重置事件
+- 定期审查 TPM 相关日志
 
 ## 10. 性能优化
 
